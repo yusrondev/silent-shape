@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#1a1a2e" />
+
+  <!-- SEO -->
+  <title>Silent Shape — Post-Apocalyptic 3D Explorer</title>
+  <meta name="description" content="Jelajahi reruntuhan dunia pasca-apokaliptik dalam gaya visual geometris 3D yang unik. Game eksplorasi mobile berbasis browser." />
+
+  <!-- Preconnect for Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;400;600&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- Loading Screen -->
+  <div id="loading-screen" aria-label="Loading game">
+    <div class="loading-content">
+      <div class="loading-logo">
+        <div class="logo-shape logo-s1"></div>
+        <div class="logo-shape logo-s2"></div>
+        <div class="logo-shape logo-s3"></div>
+      </div>
+      <h1 class="loading-title">SILENT SHAPE</h1>
+      <p class="loading-subtitle">POST-APOCALYPTIC 3D EXPLORER</p>
+      <div class="loading-bar-container" aria-label="Loading progress">
+        <div id="loading-bar" class="loading-bar"></div>
+      </div>
+      <p id="loading-text" class="loading-text">Initializing world...</p>
+    </div>
+  </div>
+
+  <!-- Start Screen (shown before game) -->
+  <div id="start-screen" aria-label="Game start screen">
+    <div class="start-content">
+      <div class="start-logo">
+        <div class="logo-shape logo-s1"></div>
+        <div class="logo-shape logo-s2"></div>
+        <div class="logo-shape logo-s3"></div>
+      </div>
+      <h1 class="start-title">SILENT SHAPE</h1>
+      <p class="start-subtitle">POST-APOCALYPTIC 3D EXPLORER</p>
+      <button id="btn-start-game" class="btn-start" aria-label="Start game in fullscreen">
+        <span class="btn-start-icon">▶</span>
+        <span>PLAY</span>
+      </button>
+      <p class="start-hint">Tap PLAY to enter fullscreen &amp; start exploring</p>
+    </div>
+  </div>
+
+  <!-- Orientation Warning (portrait mobile — fallback only) -->
+  <div id="orientation-warning" aria-label="Please rotate device">
+    <div class="orient-icon">⟳</div>
+    <p>Putar perangkat ke mode landscape</p>
+  </div>
+
+  <!-- Game Canvas -->
+  <canvas id="game-canvas" aria-label="Game viewport"></canvas>
+
+  <!-- HUD Layer -->
+  <div id="hud" aria-label="Game HUD" hidden>
+    <!-- Top Bar -->
+    <div id="hud-top">
+      <div id="hud-region" aria-label="Current region">
+        <span class="hud-label">REGION</span>
+        <span id="region-name" class="hud-value">GREY DISTRICT</span>
+      </div>
+      <div id="hud-center-top">
+        <span id="hud-status-msg" class="hud-status"></span>
+      </div>
+      <div id="hud-signal" aria-label="Signal strength">
+        <span class="hud-label">SIGNAL</span>
+        <div class="signal-bars" id="signal-bars">
+          <div class="signal-bar" data-level="1"></div>
+          <div class="signal-bar" data-level="2"></div>
+          <div class="signal-bar" data-level="3"></div>
+          <div class="signal-bar" data-level="4"></div>
+          <div class="signal-bar" data-level="5"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Interaction Prompt (contextual, center-bottom) -->
+    <div id="interact-prompt" class="interact-prompt" hidden aria-live="polite">
+      <div class="interact-icon">◎</div>
+      <span id="interact-text">Interact</span>
+    </div>
+
+    <!-- Transmit Progress (when holding interact at tower) -->
+    <div id="transmit-hud" class="transmit-hud" hidden>
+      <div class="transmit-ring">
+        <svg viewBox="0 0 60 60" class="transmit-svg">
+          <circle class="transmit-track" cx="30" cy="30" r="24"/>
+          <circle id="transmit-progress-ring" class="transmit-progress" cx="30" cy="30" r="24"/>
+        </svg>
+        <span class="transmit-label">TRANSMIT</span>
+      </div>
+    </div>
+
+    <!-- Artefact Story Log Popup -->
+    <div id="story-log" class="story-log" hidden aria-live="assertive">
+      <div class="story-log-header">
+        <span class="story-artifact-id" id="artifact-id">ARTEFACT #001</span>
+        <button id="story-close" class="story-close" aria-label="Close log">✕</button>
+      </div>
+      <p id="story-text" class="story-text"></p>
+    </div>
+
+    <!-- Debug info (dev only) -->
+    <div id="debug-hud" class="debug-hud">
+      <span id="debug-fps">FPS: --</span>
+      <span id="debug-pos">x:0 z:0</span>
+      <span id="debug-chunks">chunks: 0</span>
+    </div>
+  </div>
+
+  <!-- Touch Controls Layer -->
+  <div id="controls-layer" aria-label="Touch controls" hidden>
+    <!-- Left zone: Virtual Joystick (Nipple.js) -->
+    <div id="joystick-zone" aria-label="Movement joystick"></div>
+
+    <!-- Camera drag zone (center area - transparent pass-through) -->
+    <div id="camera-zone" aria-label="Camera control area"></div>
+
+    <!-- Right zone: Action Buttons (Arc layout) -->
+    <div id="action-buttons" aria-label="Action buttons">
+      <!-- Tool Button (top of arc) -->
+      <button id="btn-tool" class="action-btn btn-tool" aria-label="Use tool (grappling hook / glider)" data-btn="tool">
+        <span class="btn-icon">⚡</span>
+        <span class="btn-label">TOOL</span>
+      </button>
+
+      <!-- Interact Button (contextual - hidden by default) -->
+      <button id="btn-interact" class="action-btn btn-interact" aria-label="Interact / pick up artifact" data-btn="interact" hidden>
+        <span class="btn-icon">◎</span>
+        <span class="btn-label">ACT</span>
+      </button>
+
+      <!-- Jump Button (largest - bottom of arc) -->
+      <button id="btn-jump" class="action-btn btn-jump" aria-label="Jump or climb" data-btn="jump">
+        <span class="btn-icon">↑</span>
+        <span class="btn-label">JUMP</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Main Game Script -->
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
