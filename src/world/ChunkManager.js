@@ -18,7 +18,7 @@ export class ChunkManager {
     this.scene     = scene;
     this.generator = new BuildingGenerator(biome);
 
-    /** Map of "x,z" → { group, buildingMeshes, artefact } */
+    /** Map of "x,z" → { group, buildingMeshes, artefact, leaves } */
     this._loadedChunks  = new Map();
     this._pendingChunks = new Set();
 
@@ -26,6 +26,9 @@ export class ChunkManager {
     this._playerCZ = null;
     this._checkTimer = 0;
     this._checkInterval = 0.5;
+
+    this.loadRadius = 2; // Default to Medium preset
+    this.unloadDist = 3;
 
     /** Flat artefact list for main loop (no traverse needed) */
     this.artefacts = [];
@@ -52,8 +55,8 @@ export class ChunkManager {
   }
 
   _scheduleLoads(cx, cz) {
-    for (let dx = -LOAD_RADIUS; dx <= LOAD_RADIUS; dx++) {
-      for (let dz = -LOAD_RADIUS; dz <= LOAD_RADIUS; dz++) {
+    for (let dx = -this.loadRadius; dx <= this.loadRadius; dx++) {
+      for (let dz = -this.loadRadius; dz <= this.loadRadius; dz++) {
         const key = `${cx + dx},${cz + dz}`;
         if (!this._loadedChunks.has(key) && !this._pendingChunks.has(key)) {
           this._pendingChunks.add(key);
@@ -88,7 +91,7 @@ export class ChunkManager {
     let changed = false;
     for (const [key, data] of this._loadedChunks) {
       const [kx, kz] = key.split(',').map(Number);
-      if (Math.abs(kx - cx) > UNLOAD_DIST || Math.abs(kz - cz) > UNLOAD_DIST) {
+      if (Math.abs(kx - cx) > this.unloadDist || Math.abs(kz - cz) > this.unloadDist) {
         this.scene.remove(data.group);
         BuildingGenerator.disposeChunk(data.group);
         this._loadedChunks.delete(key);

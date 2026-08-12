@@ -17,6 +17,7 @@ import { Camera }        from './player/Camera.js';
 import { Environment }   from './world/Environment.js';
 import { ChunkManager }  from './world/ChunkManager.js';
 import { HUD }           from './ui/HUD.js';
+import { Enemy }         from './world/Enemy.js';
 
 const ARTEFACT_PICKUP_RADIUS = 4;
 const IS_MOBILE  = /Android|iPhone|iPad/i.test(navigator.userAgent);
@@ -90,6 +91,15 @@ class SilentShapeGame {
     this._frameCount  = 0;
     this._fpsTimer    = 0;
     this._currentFPS  = 0;
+
+    // Combat states
+    this.enemies = [];
+    this.enemyProjectiles = [];
+    this.playerProjectiles = [];
+    this.targetEnemy = null;
+    this.crosshairMesh = null;
+    this.playerShootCooldown = 0;
+    this.enemySpawnTimer = 0;
   }
 
   async init() {
@@ -99,6 +109,7 @@ class SilentShapeGame {
     setLoadingProgress(60, 'Initializing player...'); this._initPlayer();
     setLoadingProgress(75, 'Setting up controls...');  this._initControls();
     setLoadingProgress(90, 'Preparing HUD...');       this._initHUD();
+    this._initSettings();
     setLoadingProgress(100, 'Ready!');
 
     await new Promise(r => setTimeout(r, 400));
@@ -109,14 +120,15 @@ class SilentShapeGame {
     const canvas = document.getElementById('game-canvas');
     this.renderer = new THREE.WebGLRenderer({
       canvas,
-      antialias: false,
+      antialias: true,
       powerPreference: 'high-performance',
       alpha: false,
     });
     this.renderer.setPixelRatio(PIXEL_RATIO);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setClearColor(0x1a1a2e, 1);
-    this.renderer.shadowMap.enabled = false;
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.BasicShadowMap;
     this.renderer.toneMapping = THREE.LinearToneMapping;
   }
 
@@ -127,6 +139,18 @@ class SilentShapeGame {
 
     this.environment = new Environment(this.scene);
     this.environment.applyBiome('grey_district', true);
+
+    // Auto-aim 3D Crosshair Ring mesh
+    const ringGeo = new THREE.RingGeometry(0.55, 0.65, 16);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xff3c3c,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.8
+    });
+    this.crosshairMesh = new THREE.Mesh(ringGeo, ringMat);
+    this.crosshairMesh.visible = false;
+    this.scene.add(this.crosshairMesh);
   }
 
   _initWorld() {
@@ -233,7 +257,206 @@ class SilentShapeGame {
 
     // 7. Transmit + HUD
     this._handleTransmit();
+    this._updateCombat(delta);
     this._updateHUD(delta);
+  }
+
+  _updateCombat(delta) {
+    const playerPos = this.player.position;
+
+    // 1. Spawning enemies randomly around the player
+    this.enemySpawnTimer += delta;
+    if (this.enemySpawnTimer >= 1.5) {
+      this.enemySpawnTimer = 0;
+      if (this.enemies.length < 5) {
+        // Find a random position around player
+        const angle = Math.random() * Math.PI * 2;
+        const radius = 15.0 + Math.random() * 15.0;
+        const sx = playerPos.x + Math.sin(angle) * radius;
+        const sz = playerPos.z + Math.cos(angle) * radius;
+        const sy = 0; // Ground height
+        
+        // Ensure not inside initial spawn point
+        if (Math.hypot(sx - 32, sz - 32) > 8) {
+          const enemy = new Enemy(this.scene, new THREE.Vector3(sx, sy, sz));
+          this.enemies.push(enemy);
+        }
+      }
+    }
+
+    // 2. Target acquisition — find closest enemy in range (just for crosshair + fire target)
+    let bestTarget = null;
+    let minDistance = 22.0;
+
+    for (let i = 0; i < this.enemies.length; i++) {
+      const enemy = this.enemies[i];
+      const dist = playerPos.distanceTo(enemy.group.position);
+      if (dist < minDistance) {
+        minDistance = dist;
+        bestTarget = enemy;
+      }
+    }
+    this.targetEnemy = bestTarget;
+
+    // 3. Player Firing Controls
+    this.playerShootCooldown -= delta;
+    const wantsToFire = this.input.fire || this.input.keys.space;
+    this.player.isFiring = wantsToFire;
+
+    if (wantsToFire) {
+      // Only face-lock and show crosshair when actively firing
+      if (bestTarget) {
+        this.player.setTargetPosition(bestTarget.group.position);
+        this.crosshairMesh.visible = true;
+        this.crosshairMesh.position.copy(bestTarget.group.position).add(new THREE.Vector3(0, 0.8, 0));
+        this.crosshairMesh.rotation.z += 2.0 * delta;
+        this.crosshairMesh.lookAt(this.camera3.position);
+      } else {
+        this.crosshairMesh.visible = false;
+      }
+
+      if (this.playerShootCooldown <= 0) {
+        this.playerShootCooldown = 0.22;
+        const muzzleWorldPos = this.player.triggerShootEffect();
+
+        // Bullet direction: toward locked enemy or straight forward
+        let bulletDir = new THREE.Vector3();
+        if (bestTarget) {
+          const aimPos = bestTarget.group.position.clone().add(new THREE.Vector3(0, 0.6, 0));
+          bulletDir.subVectors(aimPos, muzzleWorldPos).normalize();
+        } else {
+          // Player faces +Z when facingAngle = 0
+          bulletDir.set(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.player.facingAngle);
+        }
+
+        // Spawn player bullet (small glowing sphere)
+        const bGeo = new THREE.SphereGeometry(0.07, 6, 6);
+        const bMat = new THREE.MeshBasicMaterial({ color: 0xff3c3c });
+        const bMesh = new THREE.Mesh(bGeo, bMat);
+        bMesh.position.copy(muzzleWorldPos);
+        this.scene.add(bMesh);
+
+        // Small point light on bullet for glow effect
+        const bLight = new THREE.PointLight(0xff3c3c, 1.2, 3);
+        bMesh.add(bLight);
+
+        this.playerProjectiles.push({
+          mesh:     bMesh,
+          dir:      bulletDir,
+          speed:    35.0,
+          age:      0,
+          maxAge:   0.7,
+          hitDone:  false,
+          targetEnemy: bestTarget  // snapshot target at fire time
+        });
+      }
+    } else {
+      // Not firing — release face lock and hide crosshair
+      this.player.setTargetPosition(null);
+      this.crosshairMesh.visible = false;
+    }
+
+    // 4. Update enemies AI & shoot triggers
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const enemy = this.enemies[i];
+      enemy.group.position.y = 0;
+
+      enemy.update(playerPos, delta, (startPos, targetPos) => {
+        // Enemy bullet projectile (yellow sphere)
+        const bulletGeo = new THREE.SphereGeometry(0.1, 6, 6);
+        const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+        const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
+        bulletMesh.position.copy(startPos);
+        this.scene.add(bulletMesh);
+
+        const dir = new THREE.Vector3().subVectors(targetPos, startPos).normalize();
+        this.enemyProjectiles.push({
+          mesh: bulletMesh,
+          dir,
+          speed: 14.0,
+          age: 0,
+          maxAge: 1.8
+        });
+      });
+    }
+
+    // 5. Update enemy bullets & hit player checks
+    for (let i = this.enemyProjectiles.length - 1; i >= 0; i--) {
+      const bullet = this.enemyProjectiles[i];
+      bullet.mesh.position.addScaledVector(bullet.dir, bullet.speed * delta);
+      bullet.age += delta;
+
+      const distToPlayer = bullet.mesh.position.distanceTo(
+        new THREE.Vector3().copy(playerPos).add(new THREE.Vector3(0, 0.6, 0))
+      );
+      if (distToPlayer < 1.0) {
+        const playerDead = this.player.takeDamage(10);
+        const hpBar = document.getElementById('hp-bar');
+        if (hpBar) hpBar.style.width = this.player.hp + '%';
+
+        this.scene.remove(bullet.mesh);
+        bullet.mesh.geometry.dispose();
+        bullet.mesh.material.dispose();
+        this.enemyProjectiles.splice(i, 1);
+
+        if (playerDead) {
+          this.player.hp = 100;
+          this.player.position.set(32, 12, 32);
+          if (hpBar) hpBar.style.width = '100%';
+          this.hud.showStatus('RE-INTEGRATING CHARACTER...', 3500);
+          for (const enemy of this.enemies) enemy.destroy();
+          this.enemies = [];
+          this.targetEnemy = null;
+          this.crosshairMesh.visible = false;
+          this.player.setTargetPosition(null);
+        }
+        continue;
+      }
+
+      if (bullet.age >= bullet.maxAge) {
+        this.scene.remove(bullet.mesh);
+        bullet.mesh.geometry.dispose();
+        bullet.mesh.material.dispose();
+        this.enemyProjectiles.splice(i, 1);
+      }
+    }
+
+    // 6. Update player bullets — move & check enemy hit
+    for (let i = this.playerProjectiles.length - 1; i >= 0; i--) {
+      const proj = this.playerProjectiles[i];
+      proj.mesh.position.addScaledVector(proj.dir, proj.speed * delta);
+      proj.age += delta;
+
+      // Check hit against all living enemies
+      if (!proj.hitDone) {
+        for (let j = this.enemies.length - 1; j >= 0; j--) {
+          const enemy = this.enemies[j];
+          const dist = proj.mesh.position.distanceTo(enemy.group.position.clone().add(new THREE.Vector3(0, 0.6, 0)));
+          if (dist < 1.0) {
+            proj.hitDone = true;
+            const isDead = enemy.takeDamage(10);
+            if (isDead) {
+              enemy.destroy();
+              this.enemies.splice(j, 1);
+              if (enemy === this.targetEnemy) {
+                this.targetEnemy = null;
+                this.crosshairMesh.visible = false;
+                this.player.setTargetPosition(null);
+              }
+              this.hud.showStatus('ALIEN ELIMINATED', 2000);
+            }
+            break;
+          }
+        }
+      }
+
+      if (proj.age >= proj.maxAge || proj.hitDone) {
+        this.scene.remove(proj.mesh);
+        proj.mesh.geometry.dispose();
+        proj.mesh.material.dispose();
+        this.playerProjectiles.splice(i, 1);
+      }
+    }
   }
 
   // ── Artefact System (NO scene.traverse) ───────────────────────────────────
@@ -298,6 +521,59 @@ class SilentShapeGame {
       }
     }
   }
+
+  _initSettings() {
+    // Apply default medium preset
+    this.applyPreset('medium');
+  }
+
+  applyPreset(preset) {
+    if (!this.renderer || !this.environment || !this.chunkManager) return;
+
+    const sun = this.environment._sun;
+
+    if (preset === 'low') {
+      if (sun) sun.castShadow = false;
+
+      this.chunkManager.loadRadius = 1;
+      this.chunkManager.unloadDist = 2;
+    } else if (preset === 'medium') {
+      if (sun) {
+        sun.castShadow = true;
+        sun.shadow.mapSize.set(512, 512);
+        if (sun.shadow.map) {
+          sun.shadow.map.dispose();
+          sun.shadow.map = null;
+        }
+      }
+
+      this.chunkManager.loadRadius = 2;
+      this.chunkManager.unloadDist = 3;
+    } else if (preset === 'high') {
+      if (sun) {
+        sun.castShadow = true;
+        sun.shadow.mapSize.set(1024, 1024);
+        if (sun.shadow.map) {
+          sun.shadow.map.dispose();
+          sun.shadow.map = null;
+        }
+      }
+
+      this.chunkManager.loadRadius = 3;
+      this.chunkManager.unloadDist = 4;
+    }
+
+    // Notify scene materials of shadow changes
+    this.scene.traverse((obj) => {
+      if (obj.isMesh && obj.material) {
+        obj.material.needsUpdate = true;
+      }
+    });
+
+    // Force immediate chunk manager update to load/unload according to preset load limits
+    this.chunkManager.update(this.player.position, 1.0);
+  }
+
 
   _updateHUD(delta) {
     this._frameCount++;

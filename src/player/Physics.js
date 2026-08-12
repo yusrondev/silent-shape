@@ -12,7 +12,7 @@ import * as THREE from 'three';
 const GRAVITY         = -22;
 const MAX_FALL        = -35;
 const CHAR_HX         = 0.4;
-const CHAR_HY         = 0.9;
+const CHAR_HY         = 1.3;
 const CHAR_HZ         = 0.4;
 const MAX_CHECK_RADIUS = 18;  // only check buildings within this radius
 
@@ -26,6 +26,7 @@ export class Physics {
     this.velocity  = new THREE.Vector3();
     /** Set from ChunkManager.buildings — no traverse needed */
     this.buildings = [];
+    this.standingBuilding = null;
   }
 
   integrate(position, delta, onGround) {
@@ -49,12 +50,7 @@ export class Physics {
     let onGround = false;
 
     // ── X axis ──
-    _charBox.set(
-      _tmp.set(resolved.x - CHAR_HX, currentPos.y - CHAR_HY, currentPos.z - CHAR_HZ),
-      _tmp.set(resolved.x + CHAR_HX, currentPos.y + CHAR_HY, currentPos.z + CHAR_HZ)
-    );
-    // Note: Box3.set doesn't copy, need proper setup:
-    _charBox.min.set(resolved.x - CHAR_HX, currentPos.y - CHAR_HY, currentPos.z - CHAR_HZ);
+    _charBox.min.set(resolved.x - CHAR_HX, currentPos.y - CHAR_HY + 0.08, currentPos.z - CHAR_HZ);
     _charBox.max.set(resolved.x + CHAR_HX, currentPos.y + CHAR_HY, currentPos.z + CHAR_HZ);
 
     for (const box of nearby) {
@@ -66,7 +62,7 @@ export class Physics {
     }
 
     // ── Z axis ──
-    _charBox.min.set(resolved.x - CHAR_HX, currentPos.y - CHAR_HY, resolved.z - CHAR_HZ);
+    _charBox.min.set(resolved.x - CHAR_HX, currentPos.y - CHAR_HY + 0.08, resolved.z - CHAR_HZ);
     _charBox.max.set(resolved.x + CHAR_HX, currentPos.y + CHAR_HY, resolved.z + CHAR_HZ);
 
     for (const box of nearby) {
@@ -76,6 +72,8 @@ export class Physics {
         break;
       }
     }
+
+    this.standingBuilding = null;
 
     // ── Y axis ──
     _charBox.min.set(resolved.x - CHAR_HX, resolved.y - CHAR_HY, resolved.z - CHAR_HZ);
@@ -90,6 +88,7 @@ export class Physics {
       if (playerWasAboveTop) {
         resolved.y    = box.max.y + CHAR_HY;
         onGround      = true;
+        this.standingBuilding = box.meshRef;
         if (this.velocity.y < 0) this.velocity.y = 0;
       } else if (playerWasBelowBot) {
         resolved.y    = box.min.y - CHAR_HY;
@@ -131,6 +130,7 @@ export class Physics {
         box = new THREE.Box3().setFromObject(mesh);
         mesh.userData.cachedBox = box;
       }
+      box.meshRef = mesh;
 
       result.push(box);
     }

@@ -14,8 +14,8 @@ import * as THREE from 'three';
 
 const BIOMES = {
   grey_district: {
-    fogColor:     0x6b6f7e,
-    fogDensity:   0.018,
+    fogColor:     0x4a4e69,
+    fogDensity:   0.022,
     skyTop:       0x1a1a2e,
     skyBottom:    0x4a4e69,
     ambientColor: 0x404058,
@@ -25,8 +25,8 @@ const BIOMES = {
     sunDirection: new THREE.Vector3(-1, 2, -1).normalize(),
   },
   rust_valley: {
-    fogColor:     0x8a5a3a,
-    fogDensity:   0.022,
+    fogColor:     0x7a4020,
+    fogDensity:   0.025,
     skyTop:       0x2a1a0a,
     skyBottom:    0x7a4020,
     ambientColor: 0x503020,
@@ -36,8 +36,8 @@ const BIOMES = {
     sunDirection: new THREE.Vector3(-0.5, 1.5, -0.8).normalize(),
   },
   pale_horizon: {
-    fogColor:     0xc8b8c0,
-    fogDensity:   0.012,
+    fogColor:     0xd8c0c8,
+    fogDensity:   0.016,
     skyTop:       0x8a7090,
     skyBottom:    0xd8c0c8,
     ambientColor: 0x907888,
@@ -47,8 +47,8 @@ const BIOMES = {
     sunDirection: new THREE.Vector3(0, 3, -1).normalize(),
   },
   echo_spire: {
-    fogColor:     0x102030,
-    fogDensity:   0.025,
+    fogColor:     0x0c2a40,
+    fogDensity:   0.028,
     skyTop:       0x080c14,
     skyBottom:    0x0c2a40,
     ambientColor: 0x102030,
@@ -75,7 +75,7 @@ export class Environment {
 
   _setup() {
     // ── Fog ──
-    this.scene.fog = new THREE.FogExp2(0x6b6f7e, 0.018);
+    this.scene.fog = new THREE.FogExp2(0x4a4e69, 0.022);
 
     // ── Ambient Light ──
     this._ambient = new THREE.AmbientLight(0x404058, 0.6);
@@ -83,9 +83,17 @@ export class Environment {
 
     // ── Directional Sun ──
     this._sun = new THREE.DirectionalLight(0xfff0c8, 0.8);
-    this._sun.position.set(-8, 16, -8);
-    // No shadow maps — performance critical
+    this._sun.position.set(-20, 32, -20);
     this._sun.castShadow = false;
+    this._sun.shadow.mapSize.width = 1024;
+    this._sun.shadow.mapSize.height = 1024;
+    this._sun.shadow.camera.near = 0.5;
+    this._sun.shadow.camera.far = 100;
+    this._sun.shadow.camera.left = -40;
+    this._sun.shadow.camera.right = 40;
+    this._sun.shadow.camera.top = 40;
+    this._sun.shadow.camera.bottom = -40;
+    this._sun.shadow.bias = -0.0005;
     this.scene.add(this._sun);
 
     // ── Sky Gradient Mesh ──

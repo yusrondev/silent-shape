@@ -12,9 +12,9 @@ export class InputManager {
     this.cameraDelta = { x: 0, y: 0 };
 
     /** Button states */
-    this.jump      = false;  // true while held
-    this.jumpDown  = false;  // true for 1 frame on press
-    this.jumpUp    = false;  // true for 1 frame on release
+    this.fire      = false;  // true while held
+    this.fireDown  = false;  // true for 1 frame on press
+    this.fireUp    = false;  // true for 1 frame on release
 
     this.interact     = false;
     this.interactDown = false;
@@ -32,6 +32,8 @@ export class InputManager {
       a: false,
       s: false,
       d: false,
+      e: false,
+      f: false,
       space: false,
       arrowup: false,
       arrowdown: false,
@@ -47,10 +49,24 @@ export class InputManager {
       const key = e.key.toLowerCase();
       if (key === ' ' || key === 'spacebar') {
         if (!this.keys.space) {
-          this.jumpDown = true;
-          this.jump = true;
+          this.fireDown = true;
+          this.fire = true;
         }
         this.keys.space = true;
+      }
+      if (key === 'e') {
+        if (!this.keys.e) {
+          this.interactDown = true;
+          this.interact = true;
+        }
+        this.keys.e = true;
+      }
+      if (key === 'f') {
+        if (!this.keys.f) {
+          this.toolDown = true;
+          this.tool = true;
+        }
+        this.keys.f = true;
       }
       if (['w', 'a', 's', 'd'].includes(key)) {
         this.keys[key] = true;
@@ -63,9 +79,17 @@ export class InputManager {
     window.addEventListener('keyup', (e) => {
       const key = e.key.toLowerCase();
       if (key === ' ' || key === 'spacebar') {
-        this.jumpUp = true;
-        this.jump = false;
+        this.fireUp = true;
+        this.fire = false;
         this.keys.space = false;
+      }
+      if (key === 'e') {
+        this.interact = false;
+        this.keys.e = false;
+      }
+      if (key === 'f') {
+        this.tool = false;
+        this.keys.f = false;
       }
       if (['w', 'a', 's', 'd'].includes(key)) {
         this.keys[key] = false;
@@ -80,8 +104,8 @@ export class InputManager {
    * Called at the end of each frame to reset one-frame flags.
    */
   flush() {
-    this.jumpDown    = false;
-    this.jumpUp      = false;
+    this.fireDown    = false;
+    this.fireUp      = false;
     this.interactDown = false;
     this.toolDown    = false;
     this.toolUp      = false;

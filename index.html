@@ -75,14 +75,10 @@
       <div id="hud-center-top">
         <span id="hud-status-msg" class="hud-status"></span>
       </div>
-      <div id="hud-signal" aria-label="Signal strength">
-        <span class="hud-label">SIGNAL</span>
-        <div class="signal-bars" id="signal-bars">
-          <div class="signal-bar" data-level="1"></div>
-          <div class="signal-bar" data-level="2"></div>
-          <div class="signal-bar" data-level="3"></div>
-          <div class="signal-bar" data-level="4"></div>
-          <div class="signal-bar" data-level="5"></div>
+      <div id="hud-hp" aria-label="Player health">
+        <span class="hud-label">HEALTH</span>
+        <div class="hp-bar-container">
+          <div id="hp-bar" class="hp-bar" style="width: 100%;"></div>
         </div>
       </div>
     </div>
@@ -131,10 +127,10 @@
 
     <!-- Right zone: Action Buttons (Arc layout) -->
     <div id="action-buttons" aria-label="Action buttons">
-      <!-- Tool Button (top of arc) -->
-      <button id="btn-tool" class="action-btn btn-tool" aria-label="Use tool (grappling hook / glider)" data-btn="tool">
-        <span class="btn-icon">⚡</span>
-        <span class="btn-label">TOOL</span>
+      <!-- Fly Button (top of arc) -->
+      <button id="btn-tool" class="action-btn btn-tool" aria-label="Fly upwards" data-btn="tool">
+        <span class="btn-icon">▲</span>
+        <span class="btn-label">FLY</span>
       </button>
 
       <!-- Interact Button (contextual - hidden by default) -->
@@ -143,13 +139,14 @@
         <span class="btn-label">ACT</span>
       </button>
 
-      <!-- Jump Button (largest - bottom of arc) -->
-      <button id="btn-jump" class="action-btn btn-jump" aria-label="Jump or climb" data-btn="jump">
-        <span class="btn-icon">↑</span>
-        <span class="btn-label">JUMP</span>
+      <!-- Fire Button (largest - bottom of arc) -->
+      <button id="btn-fire" class="action-btn btn-fire" aria-label="Fire weapon" data-btn="fire">
+        <span class="btn-icon">🎯</span>
+        <span class="btn-label">FIRE</span>
       </button>
-    </div>
   </div>
+
+
 
   <!-- Main Game Script -->
   <script type="module" src="/src/main.js"></script>

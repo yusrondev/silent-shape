@@ -396,30 +396,28 @@ html, body {
   color: var(--color-text-primary);
 }
 
-/* Signal Bars */
-.signal-bars {
+/* HP Bar HUD */
+#hud-hp {
   display: flex;
-  align-items: flex-end;
-  gap: 3px;
-  height: 16px;
+  flex-direction: column;
+  gap: 2px;
+  width: 100px;
 }
 
-.signal-bar {
-  width: 4px;
-  background: rgba(255,255,255,0.15);
-  border-radius: 2px;
-  transition: background var(--transition-fast);
+.hp-bar-container {
+  width: 100%;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  overflow: hidden;
 }
 
-.signal-bar[data-level="1"] { height: 4px; }
-.signal-bar[data-level="2"] { height: 7px; }
-.signal-bar[data-level="3"] { height: 10px; }
-.signal-bar[data-level="4"] { height: 13px; }
-.signal-bar[data-level="5"] { height: 16px; }
-
-.signal-bar.active {
-  background: var(--color-accent);
-  box-shadow: 0 0 6px var(--color-accent-dim);
+.hp-bar {
+  height: 100%;
+  background: #39ff14; /* Glowing green */
+  box-shadow: 0 0 8px #39ff14;
+  transition: width 0.1s ease-out;
 }
 
 /* Center top status */
@@ -696,17 +694,24 @@ html, body {
   text-transform: uppercase;
 }
 
-/* ── Jump Button (Largest, Bottom-Right Arc) ── */
-.btn-jump {
+/* ── Fire Button (Largest, Bottom-Right Arc) ── */
+.btn-fire {
   width: var(--btn-jump-size);
   height: var(--btn-jump-size);
   bottom: 0;
   right: 0;
-  border-color: rgba(232, 197, 71, 0.4);
+  border-color: rgba(255, 60, 60, 0.4);
   box-shadow: 0 4px 16px rgba(0,0,0,0.4);
 }
 
-.btn-jump .btn-icon { font-size: 24px; }
+.btn-fire .btn-icon { font-size: 24px; }
+
+.btn-fire:active,
+.btn-fire.active {
+  background: rgba(255, 60, 60, 0.25);
+  border-color: #ff3c3c;
+  box-shadow: 0 0 16px rgba(255, 60, 60, 0.5);
+}
 
 /* ── Interact Button (Middle of Arc) ── */
 .btn-interact {
@@ -789,4 +794,115 @@ body::after {
   }
 
   .loading-title { font-size: 22px; }
+}
+
+/* --- Settings Button & Modal Styles --- */
+.settings-btn {
+  background: none;
+  border: 1px solid var(--color-ui-border);
+  color: var(--color-text);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-btn);
+  pointer-events: all;
+  margin-left: 8px;
+  transition: all var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.settings-btn:hover {
+  background: var(--color-accent);
+  color: #000;
+  border-color: var(--color-accent);
+}
+
+.settings-modal {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(10, 10, 20, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  backdrop-filter: blur(8px);
+}
+.settings-modal[hidden] {
+  display: none;
+}
+
+.settings-content {
+  background: var(--color-ui-bg);
+  border: 1px solid var(--color-ui-border);
+  border-radius: var(--radius-panel);
+  padding: 24px;
+  width: min(340px, 90vw);
+  text-align: center;
+  pointer-events: all;
+  animation: settings-appear 0.25s ease-out;
+}
+@keyframes settings-appear {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.settings-content h2 {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  letter-spacing: 2px;
+  color: var(--color-accent);
+  margin-bottom: 18px;
+  margin-top: 0;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+.settings-group label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-text-dim);
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+.settings-group select {
+  width: 100%;
+  padding: 8px 12px;
+  background: rgba(0,0,0,0.4);
+  border: 1px solid var(--color-ui-border);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  border-radius: var(--radius-btn);
+  outline: none;
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+.settings-group select:focus {
+  border-color: var(--color-accent);
+}
+
+.settings-close-btn {
+  background: var(--color-accent);
+  color: #000;
+  border: none;
+  padding: 8px 24px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: bold;
+  letter-spacing: 1.5px;
+  border-radius: var(--radius-btn);
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+}
+.settings-close-btn:hover {
+  opacity: 0.9;
 }

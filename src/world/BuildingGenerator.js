@@ -92,6 +92,7 @@ export class BuildingGenerator {
       chunkZ * chunkSize + chunkSize / 2
     );
     ground.name = 'ground';
+    ground.receiveShadow = true;
     group.add(ground);
 
     // ── Buildings ─────────────────────────────────────────────────────────
@@ -99,7 +100,7 @@ export class BuildingGenerator {
     const count = Math.floor(rng() * 5 + 4); // 4–8 buildings (reduced from 5-10)
 
     for (let i = 0; i < count; i++) {
-      const mesh = this._makeBuilding(rng, chunkX, chunkZ, chunkSize);
+      const mesh = this._makeBuilding(rng, chunkX, chunkZ, chunkSize, group);
       if (mesh) {
         group.add(mesh);
         buildingMeshes.push(mesh);
@@ -115,7 +116,7 @@ export class BuildingGenerator {
     return { group, buildingMeshes, artefact };
   }
 
-  _makeBuilding(rng, chunkX, chunkZ, chunkSize) {
+  _makeBuilding(rng, chunkX, chunkZ, chunkSize, group) {
     const offsetX = chunkX * chunkSize;
     const offsetZ = chunkZ * chunkSize;
 
@@ -129,8 +130,22 @@ export class BuildingGenerator {
     const depth  = depths [Math.floor(rng() * depths.length)];
 
     const margin = Math.max(width, depth) / 2 + 1;
-    const posX   = offsetX + rng() * (chunkSize - margin * 2) + margin;
-    const posZ   = offsetZ + rng() * (chunkSize - margin * 2) + margin;
+    let posX, posZ;
+    let attempts = 0;
+    const spawnX = 32;
+    const spawnZ = 32;
+    const minDistance = 10;
+
+    do {
+      posX = offsetX + rng() * (chunkSize - margin * 2) + margin;
+      posZ = offsetZ + rng() * (chunkSize - margin * 2) + margin;
+      attempts++;
+    } while (
+      chunkX === 0 &&
+      chunkZ === 0 &&
+      Math.hypot(posX - spawnX, posZ - spawnZ) < minDistance &&
+      attempts < 100
+    );
 
     const tiltX  = (rng() - 0.5) * 0.22;
     const tiltZ  = (rng() - 0.5) * 0.22;
@@ -145,12 +160,17 @@ export class BuildingGenerator {
     mesh.position.set(posX, height / 2, posZ);
     mesh.rotation.set(tiltX, rng() * Math.PI * 2, tiltZ);
     mesh.name = 'building';
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
 
     // Pre-compute world bounding box ONCE here — cached on userData
     mesh.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(mesh);
     mesh.userData.cachedBox = box;
     mesh.userData.isBuilding = true;
+
+    // Spawn 3D creeping ivy on building walls
+    this._addIvyToBuilding(group, posX, posZ, width, height, depth, tiltX, tiltZ, rng);
 
     return mesh;
   }
@@ -187,6 +207,8 @@ export class BuildingGenerator {
       const merged  = mergeGeometries(debrisGeos, false);
       const mesh    = new THREE.Mesh(merged, mat);
       mesh.name     = 'debris';
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
       group.add(mesh);
       // Dispose individual geos after merge
       debrisGeos.forEach(g => g.dispose());
@@ -209,6 +231,8 @@ export class BuildingGenerator {
     const mesh         = new THREE.Mesh(geo, mat);
     mesh.position.set(offsetX + rng() * chunkSize, 0.8, offsetZ + rng() * chunkSize);
     mesh.name          = 'artefact';
+    mesh.castShadow    = true;
+    mesh.receiveShadow = true;
     mesh.userData      = {
       isArtefact: true,
       id:         `art_${chunkX}_${chunkZ}`,
@@ -217,6 +241,44 @@ export class BuildingGenerator {
 
     group.add(mesh);
     return mesh;
+  }
+
+  _addIvyToBuilding(group, posX, posZ, width, height, depth, tiltX, tiltZ, rng) {
+    const ivyColor = 0x2d3a22; // Mossy dark green/brown
+    const leafColor = 0x8c5b36; // Withered orange/brown
+    const vineMat = getMaterial(ivyColor);
+    const leafMat = getMaterial(leafColor);
+
+    // Number of vines on this building
+    const vineCount = Math.floor(rng() * 2 + 1); // 1 or 2 vines
+    for (let v = 0; v < vineCount; v++) {
+      // Choose a side: 0=front, 1=back, 2=left, 3=right
+      const side = Math.floor(rng() * 4);
+      const vineHeight = height * (0.4 + rng() * 0.5); // climbs up part of the building
+      
+      const vineGeo = getGeometry(0.08, vineHeight, 0.08);
+      const vineMesh = new THREE.Mesh(vineGeo, vineMat);
+      
+      // Position relative to building center
+      let vx = 0;
+      let vz = 0;
+      if (side === 0) { vz = depth / 2 + 0.04; }
+      else if (side === 1) { vz = -depth / 2 - 0.04; }
+      else if (side === 2) { vx = -width / 2 - 0.04; }
+      else if (side === 3) { vx = width / 2 + 0.04; }
+
+      // Adjust for vine height pivot
+      vineMesh.position.set(vx, vineHeight / 2 - height / 2, vz);
+      vineMesh.castShadow = true;
+      vineMesh.receiveShadow = true;
+      
+      // Local group to handle building rotation
+      const vineGroup = new THREE.Group();
+      vineGroup.position.set(posX, height / 2, posZ);
+      vineGroup.rotation.set(tiltX, rng() * Math.PI * 2, tiltZ);
+      vineGroup.add(vineMesh);
+      group.add(vineGroup);
+    }
   }
 
   /**

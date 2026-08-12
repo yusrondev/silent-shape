@@ -74,7 +74,7 @@ export class TouchControls {
      2. ARC ACTION BUTTONS
      ───────────────────────────────────────────────────────────── */
   _initActionButtons() {
-    this._bindButton('btn-jump',     'jump');
+    this._bindButton('btn-fire',     'fire');
     this._bindButton('btn-interact', 'interact');
     this._bindButton('btn-tool',     'tool');
   }
@@ -110,6 +110,32 @@ export class TouchControls {
       this[heldKey]   = false;
       this.input[key] = false;
       btn.classList.remove('pressed');
+    });
+
+    // Mouse support for desktop testing
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      if (this[heldKey]) return;
+      this[heldKey]       = true;
+      this.input[key]     = true;
+      this.input[downKey] = true;
+      btn.classList.add('pressed');
+    });
+
+    btn.addEventListener('mouseup', (e) => {
+      e.preventDefault();
+      this[heldKey]   = false;
+      this.input[key] = false;
+      if (upKey in this.input) this.input[upKey] = true;
+      btn.classList.remove('pressed');
+    });
+
+    btn.addEventListener('mouseleave', () => {
+      if (this[heldKey]) {
+        this[heldKey]   = false;
+        this.input[key] = false;
+        btn.classList.remove('pressed');
+      }
     });
   }
 
