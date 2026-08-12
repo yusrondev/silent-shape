@@ -10,6 +10,7 @@
  */
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { getGroundHeight } from './Terrain.js';
 
 // ── Global caches — never recreated ──────────────────────────────────────────
 const GEO_CACHE = new Map();   // "wxh" → BoxGeometry
@@ -82,15 +83,28 @@ export class BuildingGenerator {
     const seed = ((chunkX + 1000) * 31337 + (chunkZ + 1000) * 7919) | 0;
     const rng  = seededRng(seed);
 
-    // ── Ground — single plane ─────────────────────────────────────────────
-    const groundGeo = getGeometry(chunkSize, 0.1, chunkSize);
+    // ── Ground — displaced PlaneGeometry ──────────────────────────────────
+    const segments = 16;
+    const groundGeo = new THREE.PlaneGeometry(chunkSize, chunkSize, segments, segments);
+    const posAttr = groundGeo.attributes.position;
+    const centerX = chunkX * chunkSize + chunkSize / 2;
+    const centerZ = chunkZ * chunkSize + chunkSize / 2;
+
+    for (let i = 0; i < posAttr.count; i++) {
+      const lx = posAttr.getX(i);
+      const ly = posAttr.getY(i);
+      
+      const vx = centerX + lx;
+      const vz = centerZ - ly; // PlaneGeometry Y matches Z space direction
+      const height = getGroundHeight(vx, vz);
+      posAttr.setZ(i, height); // displacement in Z before rotateX
+    }
+    groundGeo.rotateX(-Math.PI / 2);
+    groundGeo.computeVertexNormals();
+
     const groundMat = getMaterial(this.palette.ground);
     const ground    = new THREE.Mesh(groundGeo, groundMat);
-    ground.position.set(
-      chunkX * chunkSize + chunkSize / 2,
-      -0.05,
-      chunkZ * chunkSize + chunkSize / 2
-    );
+    ground.position.set(centerX, 0, centerZ);
     ground.name = 'ground';
     ground.receiveShadow = true;
     group.add(ground);
@@ -157,7 +171,8 @@ export class BuildingGenerator {
     const mat  = getMaterial(color);
     const mesh = new THREE.Mesh(geo, mat);
 
-    mesh.position.set(posX, height / 2, posZ);
+    const terrainH = getGroundHeight(posX, posZ);
+    mesh.position.set(posX, terrainH + height / 2, posZ);
     mesh.rotation.set(tiltX, rng() * Math.PI * 2, tiltZ);
     mesh.name = 'building';
     mesh.castShadow = true;
@@ -195,7 +210,10 @@ export class BuildingGenerator {
         const d = rng() * 1.2 + 0.3;
 
         const geo = new THREE.BoxGeometry(w, h, d);
-        _dummy.position.set(cx + (rng()-0.5)*3, h/2, cz + (rng()-0.5)*3);
+        const px = cx + (rng() - 0.5) * 3;
+        const pz = cz + (rng() - 0.5) * 3;
+        const terrainH = getGroundHeight(px, pz);
+        _dummy.position.set(px, terrainH + h / 2, pz);
         _dummy.rotation.y = rng() * Math.PI;
         _dummy.updateMatrix();
         geo.applyMatrix4(_dummy.matrix);
@@ -221,22 +239,30 @@ export class BuildingGenerator {
     const offsetX = chunkX * chunkSize;
     const offsetZ = chunkZ * chunkSize;
 
-    const geo = getGeometry(0.8, 0.8, 0.8);
+    // 50% chance to be Heal (green) or Energy (orange)
+    const isHeal = rng() > 0.5;
+    const color = isHeal ? 0x22ff22 : 0xff8c00;
+
+    const geo = new THREE.SphereGeometry(0.35, 8, 8);
     const mat = new THREE.MeshLambertMaterial({
-      color:            0xe8c547,
-      emissive:         0xe8c547,
-      emissiveIntensity: 0.5,
+      color:             color,
+      emissive:          color,
+      emissiveIntensity: 0.6,
     });
 
+    const px = offsetX + rng() * chunkSize;
+    const pz = offsetZ + rng() * chunkSize;
+    const terrainH = getGroundHeight(px, pz);
+
     const mesh         = new THREE.Mesh(geo, mat);
-    mesh.position.set(offsetX + rng() * chunkSize, 0.8, offsetZ + rng() * chunkSize);
-    mesh.name          = 'artefact';
+    mesh.position.set(px, terrainH + 0.4, pz);
+    mesh.name          = 'spell_orb';
     mesh.castShadow    = true;
     mesh.receiveShadow = true;
     mesh.userData      = {
-      isArtefact: true,
-      id:         `art_${chunkX}_${chunkZ}`,
-      text:       ARTEFACT_LOGS[Math.abs(seed) % ARTEFACT_LOGS.length],
+      isSpell: true,
+      type:    isHeal ? 'heal' : 'energy',
+      id:      `spell_${chunkX}_${chunkZ}`,
     };
 
     group.add(mesh);
@@ -274,7 +300,8 @@ export class BuildingGenerator {
       
       // Local group to handle building rotation
       const vineGroup = new THREE.Group();
-      vineGroup.position.set(posX, height / 2, posZ);
+      const terrainH = getGroundHeight(posX, posZ);
+      vineGroup.position.set(posX, terrainH + height / 2, posZ);
       vineGroup.rotation.set(tiltX, rng() * Math.PI * 2, tiltZ);
       vineGroup.add(vineMesh);
       group.add(vineGroup);
@@ -287,8 +314,8 @@ export class BuildingGenerator {
   static disposeChunk(group) {
     group.traverse((obj) => {
       if (!obj.isMesh) return;
-      // Only dispose merged/unique geos (debris, artefact mat)
-      if (obj.name === 'debris' || obj.name === 'artefact') {
+      // Only dispose merged/unique geos (debris, spell_orb mat)
+      if (obj.name === 'debris' || obj.name === 'spell_orb') {
         obj.geometry.dispose();
         if (obj.material && !MAT_CACHE.has(obj.material.color?.getHex())) {
           obj.material.dispose();

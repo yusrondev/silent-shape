@@ -23,6 +23,7 @@ export class InputManager {
     this.toolDown = false;
     this.toolUp   = false;
 
+
     /** Intensity of joystick (0..1) — used for walk/run blend */
     this.moveIntensity = 0;
 
@@ -34,6 +35,7 @@ export class InputManager {
       d: false,
       e: false,
       f: false,
+      q: false,
       space: false,
       arrowup: false,
       arrowdown: false,

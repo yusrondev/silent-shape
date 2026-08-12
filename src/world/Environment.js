@@ -82,19 +82,25 @@ export class Environment {
     this.scene.add(this._ambient);
 
     // ── Directional Sun ──
-    this._sun = new THREE.DirectionalLight(0xfff0c8, 0.8);
-    this._sun.position.set(-20, 32, -20);
-    this._sun.castShadow = false;
-    this._sun.shadow.mapSize.width = 1024;
-    this._sun.shadow.mapSize.height = 1024;
-    this._sun.shadow.camera.near = 0.5;
-    this._sun.shadow.camera.far = 100;
-    this._sun.shadow.camera.left = -40;
-    this._sun.shadow.camera.right = 40;
-    this._sun.shadow.camera.top = 40;
-    this._sun.shadow.camera.bottom = -40;
-    this._sun.shadow.bias = -0.0005;
+    this._sun = new THREE.DirectionalLight(0xfff5e0, 1.2);
+    // Offset from player: sun comes from upper-left-back angle
+    this._sunOffset = new THREE.Vector3(-15, 30, -5);
+    this._sun.position.copy(this._sunOffset);
+    this._sun.castShadow = true;
+    // 2048x2048 shadow map, covering only 30x30m around player = very crisp player/nearby shadows
+    this._sun.shadow.mapSize.width  = 2048;
+    this._sun.shadow.mapSize.height = 2048;
+    const d = 15; // tight frustum: player + immediate surroundings only
+    this._sun.shadow.camera.near   = 1;
+    this._sun.shadow.camera.far    = 80;
+    this._sun.shadow.camera.left   = -d;
+    this._sun.shadow.camera.right  =  d;
+    this._sun.shadow.camera.top    =  d;
+    this._sun.shadow.camera.bottom = -d;
+    this._sun.shadow.bias          = -0.002;
+    this._sun.shadow.normalBias    = 0.05;
     this.scene.add(this._sun);
+    this.scene.add(this._sun.target);
 
     // ── Sky Gradient Mesh ──
     this._createSkyDome();
@@ -183,13 +189,20 @@ export class Environment {
   }
 
   /**
-   * Makes the sky dome follow the camera position (so player never "leaves" it).
+   * Makes the sky dome and sun follow the camera position.
    * Call this each frame.
    * @param {THREE.Vector3} cameraPosition
    */
-  update(cameraPosition) {
+  update(playerPosition) {
     if (this._skyMesh) {
-      this._skyMesh.position.copy(cameraPosition);
+      this._skyMesh.position.copy(playerPosition);
+    }
+    if (this._sun) {
+      this._sun.position.copy(playerPosition).add(this._sunOffset);
+      this._sun.target.position.copy(playerPosition);
+      this._sun.target.updateMatrixWorld();
+      // Required after repositioning so shadow camera picks up the new position
+      this._sun.shadow.camera.updateProjectionMatrix();
     }
   }
 }

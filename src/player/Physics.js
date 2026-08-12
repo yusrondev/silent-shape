@@ -9,6 +9,8 @@
  */
 import * as THREE from 'three';
 
+import { getGroundHeight } from '../world/Terrain.js';
+
 const GRAVITY         = -22;
 const MAX_FALL        = -35;
 const CHAR_HX         = 0.4;
@@ -98,8 +100,9 @@ export class Physics {
     }
 
     // ── Ground plane ──
-    if (resolved.y - CHAR_HY < 0) {
-      resolved.y    = CHAR_HY;
+    const terrainHeight = getGroundHeight(resolved.x, resolved.z);
+    if (resolved.y - CHAR_HY < terrainHeight) {
+      resolved.y    = terrainHeight + CHAR_HY;
       onGround      = true;
       if (this.velocity.y < 0) this.velocity.y = 0;
     }

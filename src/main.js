@@ -18,6 +18,8 @@ import { Environment }   from './world/Environment.js';
 import { ChunkManager }  from './world/ChunkManager.js';
 import { HUD }           from './ui/HUD.js';
 import { Enemy }         from './world/Enemy.js';
+import { soundManager }  from './audio/SoundManager.js';
+import { getGroundHeight } from './world/Terrain.js';
 
 const ARTEFACT_PICKUP_RADIUS = 4;
 const IS_MOBILE  = /Android|iPhone|iPad/i.test(navigator.userAgent);
@@ -100,6 +102,12 @@ class SilentShapeGame {
     this.crosshairMesh = null;
     this.playerShootCooldown = 0;
     this.enemySpawnTimer = 0;
+
+    // Ammo system
+    this.playerAmmo    = 30;
+    this.playerMaxAmmo = 30;
+    this.reloadTimer   = 0;
+    this.isReloading   = false;
   }
 
   async init() {
@@ -128,7 +136,7 @@ class SilentShapeGame {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setClearColor(0x1a1a2e, 1);
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.BasicShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.LinearToneMapping;
   }
 
@@ -242,8 +250,8 @@ class SilentShapeGame {
       this.player.physics.setBuildingsList(this.chunkManager.buildings);
     }
 
-    // 4. Sky follows camera
-    this.environment.update(this.camera3.position);
+    // 4. Sky and shadow sun follows player
+    this.environment.update(this.player.position);
 
     // 5. Artefact proximity (throttled to every 3 frames)
     this._artefactCheckFrame++;
@@ -274,7 +282,7 @@ class SilentShapeGame {
         const radius = 15.0 + Math.random() * 15.0;
         const sx = playerPos.x + Math.sin(angle) * radius;
         const sz = playerPos.z + Math.cos(angle) * radius;
-        const sy = 0; // Ground height
+        const sy = getGroundHeight(sx, sz);
         
         // Ensure not inside initial spawn point
         if (Math.hypot(sx - 32, sz - 32) > 8) {
@@ -303,7 +311,17 @@ class SilentShapeGame {
     const wantsToFire = this.input.fire || this.input.keys.space;
     this.player.isFiring = wantsToFire;
 
-    if (wantsToFire) {
+    // ── Reload logic ──
+    if (this.isReloading) {
+      this.reloadTimer -= delta;
+      if (this.reloadTimer <= 0) {
+        this.isReloading = false;
+        this.playerAmmo  = this.playerMaxAmmo;
+        this._updateAmmoHUD();
+      }
+    }
+
+    if (wantsToFire && !this.isReloading) {
       // Only face-lock and show crosshair when actively firing
       if (bestTarget) {
         this.player.setTargetPosition(bestTarget.group.position);
@@ -315,8 +333,11 @@ class SilentShapeGame {
         this.crosshairMesh.visible = false;
       }
 
-      if (this.playerShootCooldown <= 0) {
-        this.playerShootCooldown = 0.22;
+      if (this.playerShootCooldown <= 0 && this.playerAmmo > 0) {
+        this.playerShootCooldown = 0.18;
+        this.playerAmmo--;
+        this._updateAmmoHUD();
+
         const muzzleWorldPos = this.player.triggerShootEffect();
 
         // Bullet direction: toward locked enemy or straight forward
@@ -325,59 +346,81 @@ class SilentShapeGame {
           const aimPos = bestTarget.group.position.clone().add(new THREE.Vector3(0, 0.6, 0));
           bulletDir.subVectors(aimPos, muzzleWorldPos).normalize();
         } else {
-          // Player faces +Z when facingAngle = 0
           bulletDir.set(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.player.facingAngle);
         }
 
-        // Spawn player bullet (small glowing sphere)
-        const bGeo = new THREE.SphereGeometry(0.07, 6, 6);
-        const bMat = new THREE.MeshBasicMaterial({ color: 0xff3c3c });
+        // Player bullet — small elongated cylinder (looks like a real bullet)
+        const bGeo = new THREE.CylinderGeometry(0.028, 0.028, 0.16, 6);
+        const bMat = new THREE.MeshBasicMaterial({ color: 0xffd700 }); // Brass/gold
         const bMesh = new THREE.Mesh(bGeo, bMat);
         bMesh.position.copy(muzzleWorldPos);
+        // Orient bullet along travel direction
+        bMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), bulletDir);
         this.scene.add(bMesh);
 
-        // Small point light on bullet for glow effect
-        const bLight = new THREE.PointLight(0xff3c3c, 1.2, 3);
+        // Glowing orange trail light
+        const bLight = new THREE.PointLight(0xff8800, 1.0, 2.5);
         bMesh.add(bLight);
 
         this.playerProjectiles.push({
-          mesh:     bMesh,
-          dir:      bulletDir,
-          speed:    35.0,
-          age:      0,
-          maxAge:   0.7,
-          hitDone:  false,
-          targetEnemy: bestTarget  // snapshot target at fire time
+          mesh:    bMesh,
+          dir:     bulletDir,
+          speed:   40.0,
+          age:     0,
+          maxAge:  0.65,
+          hitDone: false,
         });
+
+        // Play shooting sound
+        soundManager.playGunshot('player');
+
+        // Auto-reload when empty
+        if (this.playerAmmo <= 0) {
+          this.isReloading  = true;
+          this.reloadTimer  = 1.8;
+          this._updateAmmoHUD();
+        }
       }
-    } else {
+    } else if (!wantsToFire) {
       // Not firing — release face lock and hide crosshair
       this.player.setTargetPosition(null);
       this.crosshairMesh.visible = false;
     }
 
-    // 4. Update enemies AI & shoot triggers
+    // 4. Update enemies AI, shoot triggers, and HP bar overlays
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const enemy = this.enemies[i];
-      enemy.group.position.y = 0;
+      enemy.group.position.y = getGroundHeight(enemy.group.position.x, enemy.group.position.z);
 
       enemy.update(playerPos, delta, (startPos, targetPos) => {
-        // Enemy bullet projectile (yellow sphere)
-        const bulletGeo = new THREE.SphereGeometry(0.1, 6, 6);
-        const bulletMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
-        const bulletMesh = new THREE.Mesh(bulletGeo, bulletMat);
+        // Enemy bullet — glowing red cylinder to make it visible
+        const bGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.25, 6);
+        const bMat = new THREE.MeshBasicMaterial({ color: 0xff3333 }); // Glowing red
+        const bulletMesh = new THREE.Mesh(bGeo, bMat);
+        
+        // Add a small point light to the bullet
+        const bLight = new THREE.PointLight(0xff3333, 1.0, 3.0);
+        bulletMesh.add(bLight);
+        
         bulletMesh.position.copy(startPos);
-        this.scene.add(bulletMesh);
 
         const dir = new THREE.Vector3().subVectors(targetPos, startPos).normalize();
+        bulletMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+        this.scene.add(bulletMesh);
+
         this.enemyProjectiles.push({
           mesh: bulletMesh,
           dir,
-          speed: 14.0,
+          speed: 18.0,
           age: 0,
           maxAge: 1.8
         });
+        
+        soundManager.playGunshot('enemy');
       });
+
+      // Update 2D HP bar position (project world → screen)
+      enemy.updateHPBarDOM(this.camera3, this.renderer, this.chunkManager.buildings);
     }
 
     // 5. Update enemy bullets & hit player checks
@@ -401,14 +444,18 @@ class SilentShapeGame {
 
         if (playerDead) {
           this.player.hp = 100;
-          this.player.position.set(32, 12, 32);
+          this.player.energy = 100;
+          this.player.position.set(32, getGroundHeight(32, 32) + 4, 32);
           if (hpBar) hpBar.style.width = '100%';
-          this.hud.showStatus('RE-INTEGRATING CHARACTER...', 3500);
           for (const enemy of this.enemies) enemy.destroy();
           this.enemies = [];
           this.targetEnemy = null;
           this.crosshairMesh.visible = false;
           this.player.setTargetPosition(null);
+          // Refill ammo on death/respawn
+          this.playerAmmo     = this.playerMaxAmmo;
+          this.isReloading    = false;
+          this._updateAmmoHUD();
         }
         continue;
       }
@@ -427,11 +474,12 @@ class SilentShapeGame {
       proj.mesh.position.addScaledVector(proj.dir, proj.speed * delta);
       proj.age += delta;
 
-      // Check hit against all living enemies
       if (!proj.hitDone) {
         for (let j = this.enemies.length - 1; j >= 0; j--) {
           const enemy = this.enemies[j];
-          const dist = proj.mesh.position.distanceTo(enemy.group.position.clone().add(new THREE.Vector3(0, 0.6, 0)));
+          const dist = proj.mesh.position.distanceTo(
+            enemy.group.position.clone().add(new THREE.Vector3(0, 0.6, 0))
+          );
           if (dist < 1.0) {
             proj.hitDone = true;
             const isDead = enemy.takeDamage(10);
@@ -443,7 +491,6 @@ class SilentShapeGame {
                 this.crosshairMesh.visible = false;
                 this.player.setTargetPosition(null);
               }
-              this.hud.showStatus('ALIEN ELIMINATED', 2000);
             }
             break;
           }
@@ -459,13 +506,24 @@ class SilentShapeGame {
     }
   }
 
+  /** Update ammo count DOM display */
+  _updateAmmoHUD() {
+    const el = document.getElementById('ammo-count');
+    if (!el) return;
+    if (this.isReloading) {
+      el.textContent = 'RELOADING...';
+      el.classList.add('empty');
+    } else {
+      el.textContent = `${this.playerAmmo} / ${this.playerMaxAmmo}`;
+      el.classList.toggle('empty', this.playerAmmo === 0);
+    }
+  }
+
   // ── Artefact System (NO scene.traverse) ───────────────────────────────────
   _checkArtefactProximity() {
     const playerPos = this.player.position;
-    let nearest     = null;
-    let nearestDist = ARTEFACT_PICKUP_RADIUS;
 
-    // chunkManager.artefacts is a pre-built flat array
+    // chunkManager.artefacts contains the spawned spell orbs
     for (const art of this.chunkManager.artefacts) {
       if (!art.visible) continue;
       if (this._artefactsCollected.has(art.userData.id)) continue;
@@ -475,14 +533,31 @@ class SilentShapeGame {
       const dy = art.position.y - playerPos.y;
       const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
 
-      if (dist < nearestDist) {
-        nearestDist = dist;
-        nearest     = art;
+      // Walk-over collision check (no manual interaction button needed)
+      if (dist < 1.3) {
+        const type = art.userData.type; // 'heal' or 'energy'
+        this._artefactsCollected.add(art.userData.id);
+        art.visible = false;
+        
+        soundManager.playPickup(type);
+
+        if (type === 'heal') {
+          this.player.hp = Math.min(100, this.player.hp + 25);
+          const hpBar = document.getElementById('hp-bar');
+          if (hpBar) hpBar.style.width = this.player.hp + '%';
+          this.hud.showStatus('HEALTH +25', 2000);
+        } else {
+          this.player.energy = Math.min(100, this.player.energy + 40);
+          const energyBar = document.getElementById('energy-bar');
+          if (energyBar) energyBar.style.width = this.player.energy + '%';
+          this.hud.showStatus('ENERGY +40', 2000);
+        }
+
+        // Rebuild list to exclude picked up orb
+        this.chunkManager._rebuildFlatLists();
+        break;
       }
     }
-
-    this.player.setNearArtefact(nearest);
-    this.controls.setInteractVisible(!!nearest, nearest ? 'Pick Up' : '');
   }
 
   _animateArtefacts(delta) {
@@ -497,29 +572,7 @@ class SilentShapeGame {
   }
 
   _handleTransmit() {
-    const progress     = this.player.transmitProgress;
-    const transmitting = this.player.isTransmitting;
-
-    this.hud.setTransmitProgress(progress, transmitting);
-
-    if (this.player.isTransmitComplete) {
-      const art = this.player._nearArtefact;
-      if (art && !this._artefactsCollected.has(art.userData.id)) {
-        this._artefactsCollected.add(art.userData.id);
-        this.hud.showStoryLog(art.userData.id, art.userData.text);
-
-        this._signalLevel = Math.min(5, this._artefactsCollected.size);
-        this.hud.setSignalLevel(this._signalLevel);
-
-        art.visible = false;
-        this.player.setNearArtefact(null);
-        this.controls.setInteractVisible(false);
-        this.hud.showStatus('SIGNAL CAPTURED', 3000);
-
-        // Rebuild artefact list after hiding one
-        this.chunkManager._rebuildFlatLists();
-      }
-    }
+    // Overridden: no manual transmission/alert text popups needed anymore for orbs
   }
 
   _initSettings() {
@@ -533,32 +586,26 @@ class SilentShapeGame {
     const sun = this.environment._sun;
 
     if (preset === 'low') {
+      // Low: disable sun shadows for performance, keep player spotlight
       if (sun) sun.castShadow = false;
-
       this.chunkManager.loadRadius = 1;
       this.chunkManager.unloadDist = 2;
     } else if (preset === 'medium') {
-      if (sun) {
-        sun.castShadow = true;
-        sun.shadow.mapSize.set(512, 512);
-        if (sun.shadow.map) {
-          sun.shadow.map.dispose();
-          sun.shadow.map = null;
-        }
-      }
-
-      this.chunkManager.loadRadius = 2;
-      this.chunkManager.unloadDist = 3;
-    } else if (preset === 'high') {
+      // Medium: 1024 shadow map, moderate chunk radius
       if (sun) {
         sun.castShadow = true;
         sun.shadow.mapSize.set(1024, 1024);
-        if (sun.shadow.map) {
-          sun.shadow.map.dispose();
-          sun.shadow.map = null;
-        }
+        if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
       }
-
+      this.chunkManager.loadRadius = 2;
+      this.chunkManager.unloadDist = 3;
+    } else if (preset === 'high') {
+      // High: 2048 shadow map (Environment default), wider chunk radius
+      if (sun) {
+        sun.castShadow = true;
+        sun.shadow.mapSize.set(2048, 2048);
+        if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+      }
       this.chunkManager.loadRadius = 3;
       this.chunkManager.unloadDist = 4;
     }
@@ -583,6 +630,10 @@ class SilentShapeGame {
       this._frameCount = 0;
       this._fpsTimer  -= 1;
     }
+    // Update energy bar HUD
+    const energyBar = document.getElementById('energy-bar');
+    if (energyBar) energyBar.style.width = this.player.energy + '%';
+
     this.hud.updateDebug(this._currentFPS, this.player.position, this.chunkManager.chunkCount);
   }
 
@@ -609,8 +660,9 @@ hideLoadingScreen();
 
 if (btnStartGame && startScreen) {
   btnStartGame.addEventListener('click', () => {
-    // 1. Request fullscreen + landscape on user gesture
+    // 1. Request fullscreen + landscape on user gesture, resume AudioContext
     requestFullscreenLandscape();
+    soundManager.resume();
 
     // 2. Hide start screen with fade
     startScreen.classList.add('hidden');

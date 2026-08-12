@@ -1,5 +1,5 @@
 /**
- * Player.js — Third-Person Character Controller
+ * Player.js â€” Third-Person Character Controller
  *
  * Shape Style Player:
  *   - Body: BoxGeometry (main body + head block)
@@ -12,6 +12,7 @@
  */
 import * as THREE from 'three';
 import { Physics } from './Physics.js';
+import { soundManager } from '../audio/SoundManager.js';
 
 const WALK_SPEED    = 6;
 const RUN_SPEED     = 11;
@@ -29,7 +30,7 @@ export class Player {
     this._particlePool = [];
 
     /** Public position reference */
-    this.position = new THREE.Vector3(32, 5.0, 32); // spawn high — falls cleanly to ground
+    this.position = new THREE.Vector3(32, 5.0, 32); // spawn high â€” falls cleanly to ground
 
     /** Player group (contains all mesh parts) */
     this.group    = new THREE.Group();
@@ -61,10 +62,15 @@ export class Player {
     this.facingAngle = 0;
 
     // Bob animation
-    this._bobTime = 0;
+    this._bobTime    = 0;
+    this._footSinSign = 1;  // tracks sign of sin(_bobTime) to detect foot-strike
+    this._nextFoot   = 'left';
 
     /** HP & Combat state */
     this.hp = 100;
+    this.energy = 100;
+    this.maxEnergy = 100;
+    this._flightFatigued = false; // Prevents stutter-flying at 0%
     this.isFiring = false;
     this._hasTarget = false;
     this._targetEnemyPos = null;
@@ -84,107 +90,132 @@ export class Player {
    * @private
    */
   _buildMesh() {
-    // Body — main block (Dark Charcoal tunic style)
-    const bodyGeo = new THREE.BoxGeometry(0.65, 1.0, 0.38);
-    const bodyMat = new THREE.MeshLambertMaterial({ color: 0x1a1a1a }); // Dark Charcoal
-    const body    = new THREE.Mesh(bodyGeo, bodyMat);
-    body.position.y = -0.1;
+    // â”€â”€ Material Palette â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const suitMat   = new THREE.MeshLambertMaterial({ color: 0xe8e8e8 }); // White spacesuit
+    const suitDark  = new THREE.MeshLambertMaterial({ color: 0xc0c0c0 }); // Panel shadow grey
+    const suitAccent= new THREE.MeshLambertMaterial({ color: 0xf0a500 }); // NASA orange stripe
+    const helmetMat = new THREE.MeshLambertMaterial({ color: 0xdddddd }); // Helmet shell
+    const visorMat  = new THREE.MeshLambertMaterial({ color: 0x1a1a1a,
+      emissive: 0x002244, emissiveIntensity: 0.5 });                       // Dark reflective visor
+    const bootMat   = new THREE.MeshLambertMaterial({ color: 0x555555 }); // Grey boots
+    const glowMat   = new THREE.MeshBasicMaterial({ color: 0xffe066 });   // HUD glow
+
+    // â”€â”€ TORSO (bulky pressurised suit chest) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const bodyGeo = new THREE.BoxGeometry(0.78, 1.05, 0.52);
+    const body    = new THREE.Mesh(bodyGeo, suitMat);
+    body.position.y = -0.08;
     this.group.add(body);
 
-    const goldMat  = new THREE.MeshLambertMaterial({
-      color: 0xe8c547,
-      emissive: 0xe8c547,
-      emissiveIntensity: 0.3
+    // Chest panel ridge (front)
+    const chestPanel = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.46, 0.06), suitDark);
+    chestPanel.position.set(0, 0.1, 0.29);
+    this.group.add(chestPanel);
+
+    // Chest LED indicator
+    const ledGeo = new THREE.BoxGeometry(0.06, 0.06, 0.04);
+    const ledMat = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+    const led = new THREE.Mesh(ledGeo, ledMat);
+    led.position.set(0, 0.22, 0.32);
+    this.group.add(led);
+    const ledLight = new THREE.PointLight(0x00ff88, 0.8, 1.5);
+    ledLight.position.copy(led.position);
+    this.group.add(ledLight);
+
+    // Orange accent stripes on torso sides
+    const stripeL = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.6, 0.54), suitAccent);
+    stripeL.position.set(-0.42, 0.05, -0.01);
+    this.group.add(stripeL);
+    const stripeR = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.6, 0.54), suitAccent);
+    stripeR.position.set(0.42, 0.05, -0.01);
+    this.group.add(stripeR);
+
+    // â”€â”€ UTILITY BELT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const beltMat = new THREE.MeshLambertMaterial({ color: 0x888888 });
+    const belt = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.1, 0.54), beltMat);
+    belt.position.set(0, -0.4, 0);
+    this.group.add(belt);
+
+    // Belt pouches
+    const pouchGeo = new THREE.BoxGeometry(0.12, 0.1, 0.08);
+    const pouchMat = new THREE.MeshLambertMaterial({ color: 0x666666 });
+    [-0.22, 0, 0.22].forEach(x => {
+      const pouch = new THREE.Mesh(pouchGeo, pouchMat);
+      pouch.position.set(x, -0.4, 0.32);
+      this.group.add(pouch);
     });
 
-    // Gold sash/belt
-    const sashGeo = new THREE.BoxGeometry(0.67, 0.12, 0.4);
-    const sashMesh = new THREE.Mesh(sashGeo, goldMat);
-    sashMesh.position.set(0, -0.22, 0);
-    this.group.add(sashMesh);
+    // â”€â”€ HELMET (rounded box with wide visor) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const helmetShell = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.62, 0.58), helmetMat);
+    helmetShell.position.y = 0.68;
+    this.group.add(helmetShell);
 
-    // Front crossover collar flaps (outer vest style)
-    const flapMat = new THREE.MeshLambertMaterial({ color: 0x242424 }); // Slightly lighter charcoal
+    // Helmet neck ring (connects to suit)
+    const neckRing = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.08, 0.52), beltMat);
+    neckRing.position.y = 0.38;
+    this.group.add(neckRing);
+
+    // Wide reflective visor
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.22, 0.14), visorMat);
+    visor.position.set(0, 0.7, 0.28);
+    this.group.add(visor);
+
+    // Visor gold tint rim
+    const visorRimT = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.03, 0.06), glowMat);
+    visorRimT.position.set(0, 0.82, 0.27);
+    this.group.add(visorRimT);
+    const visorRimB = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.03, 0.06), glowMat);
+    visorRimB.position.set(0, 0.59, 0.27);
+    this.group.add(visorRimB);
+
+    // Helmet-mounted light (Spotlight pointing forward)
+    const lampMesh = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.04, 0.06), glowMat);
+    lampMesh.position.set(0, 0.98, 0.22);
+    this.group.add(lampMesh);
     
-    const leftFlap = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.45, 0.04), flapMat);
-    leftFlap.position.set(-0.1, 0.15, 0.2);
-    leftFlap.rotation.z = -0.15;
-    this.group.add(leftFlap);
-
-    const rightFlap = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.45, 0.04), flapMat);
-    rightFlap.position.set(0.1, 0.15, 0.2);
-    rightFlap.rotation.z = 0.15;
-    this.group.add(rightFlap);
-
-    // Crossover gold trim lines
-    const leftTrim = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.45, 0.05), goldMat);
-    leftTrim.position.set(-0.06, 0.15, 0.21);
-    leftTrim.rotation.z = -0.15;
-    this.group.add(leftTrim);
-
-    const rightTrim = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.45, 0.05), goldMat);
-    rightTrim.position.set(0.06, 0.15, 0.21);
-    rightTrim.rotation.z = 0.15;
-    this.group.add(rightTrim);
-
-    // Gold collar hanging tassels (left/right)
-    const tasselGeo = new THREE.BoxGeometry(0.04, 0.16, 0.04);
+    const visorLight = new THREE.SpotLight(0xffe066, 12.0, 45.0, Math.PI / 4, 0.6, 1.0);
+    visorLight.position.set(0, 0.98, 0.26);
     
-    const leftTassel = new THREE.Mesh(tasselGeo, goldMat);
-    leftTassel.position.set(-0.12, -0.05, 0.22);
-    this.group.add(leftTassel);
-
-    const rightTassel = new THREE.Mesh(tasselGeo, goldMat);
-    rightTassel.position.set(0.12, -0.05, 0.22);
-    this.group.add(rightTassel);
-
-    // Head — slightly smaller cube
-    const headGeo = new THREE.BoxGeometry(0.5, 0.5, 0.4);
-    const headMat = new THREE.MeshLambertMaterial({ color: 0xe8e8e8 });
-    const head    = new THREE.Mesh(headGeo, headMat);
-    head.position.y = 0.65;
-    this.group.add(head);
-
-    // Visor (signature explorer mask)
-    const visorGeo = new THREE.BoxGeometry(0.52, 0.15, 0.22);
-    const visorMat = new THREE.MeshLambertMaterial({ color: 0x22222b });
-    const visorMesh = new THREE.Mesh(visorGeo, visorMat);
-    visorMesh.position.set(0, 0.68, 0.1);
-    this.group.add(visorMesh);
-
-    // Glowing visor bar
-    const glowGeo = new THREE.BoxGeometry(0.42, 0.04, 0.05);
-    const glowMat = new THREE.MeshBasicMaterial({
-      color: 0xe8c547, // glowing gold theme
-    });
-    const glowMesh = new THREE.Mesh(glowGeo, glowMat);
-    glowMesh.position.set(0, 0.68, 0.21);
-    this.group.add(glowMesh);
-
-    // Dynamic forward PointLight for dramatic visor glow
-    const visorLight = new THREE.PointLight(0xe8c547, 2.5, 6.0);
-    visorLight.position.set(0, 0.68, 0.25);
+    const visorTarget = new THREE.Object3D();
+    visorTarget.position.set(0, 0.98, 5.0);
+    this.group.add(visorTarget);
+    
+    visorLight.target = visorTarget;
     this.group.add(visorLight);
 
-    // Backpack — small box on back
-    const packGeo = new THREE.BoxGeometry(0.35, 0.5, 0.25);
-    const packMat = new THREE.MeshLambertMaterial({ color: 0x8d8fa3 });
-    const pack    = new THREE.Mesh(packGeo, packMat);
-    pack.position.set(0, -0.05, -0.32);
-    this.group.add(pack);
+    // Helmet side comms bumps
+    const commGeo = new THREE.BoxGeometry(0.06, 0.1, 0.06);
+    const commMat = new THREE.MeshLambertMaterial({ color: 0xaaaaaa });
+    const commL = new THREE.Mesh(commGeo, commMat);
+    commL.position.set(-0.34, 0.72, 0.08);
+    this.group.add(commL);
+    const commR = new THREE.Mesh(commGeo, commMat);
+    commR.position.set(0.34, 0.72, 0.08);
+    this.group.add(commR);
 
-    // Grappling hook indicator (glowing cube on pack)
-    const hookGeo = new THREE.BoxGeometry(0.12, 0.12, 0.12);
+    // â”€â”€ LIFE SUPPORT BACKPACK (PLSS) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const plss = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.72, 0.3), suitDark);
+    plss.position.set(0, -0.02, -0.41);
+    this.group.add(plss);
+
+    // O2 tanks (two cylinders on backpack)
+    const tankGeo = new THREE.BoxGeometry(0.14, 0.5, 0.1);
+    const tankMat = new THREE.MeshLambertMaterial({ color: 0xb0b0b0 });
+    const tankL = new THREE.Mesh(tankGeo, tankMat);
+    tankL.position.set(-0.18, 0.02, -0.56);
+    this.group.add(tankL);
+    const tankR = new THREE.Mesh(tankGeo, tankMat);
+    tankR.position.set(0.18, 0.02, -0.56);
+    this.group.add(tankR);
+
+    // Grappling hook indicator (glowing on PLSS)
     const hookMat = new THREE.MeshLambertMaterial({
-      color: 0xe8c547,
-      emissive: 0xe8c547,
-      emissiveIntensity: 0.6,
+      color: 0xffe066, emissive: 0xffe066, emissiveIntensity: 0.6
     });
-    this._hookMesh = new THREE.Mesh(hookGeo, hookMat);
-    this._hookMesh.position.set(0.2, 0.25, -0.35);
+    this._hookMesh = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), hookMat);
+    this._hookMesh.position.set(0.26, 0.28, -0.56);
     this.group.add(this._hookMesh);
 
-    // Glider wings (hidden by default)
+    // â”€â”€ GLIDER WINGS (kept as-is) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     this._leftWing  = this._makeWing(-1);
     this._rightWing = this._makeWing(1);
     this.group.add(this._leftWing);
@@ -192,269 +223,164 @@ export class Player {
     this._leftWing.visible  = false;
     this._rightWing.visible = false;
 
-    // --- MILITARY OVERCOAT / CLOAK (JUBAH) ---
-    const cloakMat = new THREE.MeshLambertMaterial({ color: 0x1d2d44 }); // Dark Navy Blue/Teal
-
-    // High Collar
-    const collarGeo = new THREE.BoxGeometry(0.53, 0.22, 0.42);
-    const collarMesh = new THREE.Mesh(collarGeo, cloakMat);
-    collarMesh.position.set(0, 0.38, 0.02);
-    this.group.add(collarMesh);
-
-    // Collar gold trim
-    const trimGeo = new THREE.BoxGeometry(0.55, 0.04, 0.44);
-    const trimMesh = new THREE.Mesh(trimGeo, goldMat);
-    trimMesh.position.set(0, 0.48, 0.02);
-    this.group.add(trimMesh);
-
-    // Shoulder capes / Epaulets (left & right)
-    const shoulderGeo = new THREE.BoxGeometry(0.18, 0.25, 0.42);
-    
-    const leftShoulder = new THREE.Mesh(shoulderGeo, cloakMat);
-    leftShoulder.position.set(-0.35, 0.15, -0.05);
-    this.group.add(leftShoulder);
-
-    // Left gold top plate (pauldron)
-    const leftPauldron = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.04, 0.44), goldMat);
-    leftPauldron.position.set(-0.35, 0.28, -0.05);
-    this.group.add(leftPauldron);
-
-    const rightShoulder = new THREE.Mesh(shoulderGeo, cloakMat);
-    rightShoulder.position.set(0.35, 0.15, -0.05);
-    this.group.add(rightShoulder);
-
-    // Right gold top plate (pauldron)
-    const rightPauldron = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.04, 0.44), goldMat);
-    rightPauldron.position.set(0.35, 0.28, -0.05);
-    this.group.add(rightPauldron);
-
-    // Split Back Cloak (Left & Right panels)
-    // Left Cape Chain
-    this.leftCapeSeg1 = new THREE.Group();
-    this.leftCapeSeg1.position.set(-0.18, 0.1, -0.22);
-    this.group.add(this.leftCapeSeg1);
-
-    const leftCapeMesh1 = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.4, 0.03), cloakMat);
-    leftCapeMesh1.position.y = -0.2;
-    this.leftCapeSeg1.add(leftCapeMesh1);
-
-    this.leftCapeSeg2 = new THREE.Group();
-    this.leftCapeSeg2.position.set(0, -0.4, 0);
-    this.leftCapeSeg1.add(this.leftCapeSeg2);
-
-    const leftCapeMesh2 = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.4, 0.02), cloakMat);
-    leftCapeMesh2.position.y = -0.2;
-    this.leftCapeSeg2.add(leftCapeMesh2);
-
-    this.leftCapeSeg3 = new THREE.Group();
-    this.leftCapeSeg3.position.set(0, -0.4, 0);
-    this.leftCapeSeg2.add(this.leftCapeSeg3);
-
-    const leftCapeMesh3 = new THREE.Mesh(new THREE.BoxGeometry(0.23, 0.4, 0.015), cloakMat);
-    leftCapeMesh3.position.y = -0.2;
-    this.leftCapeSeg3.add(leftCapeMesh3);
-
-    // Left Cape Tassel
-    const bottomTasselGeo = new THREE.BoxGeometry(0.05, 0.15, 0.05);
-    const leftCapeTassel = new THREE.Mesh(bottomTasselGeo, goldMat);
-    leftCapeTassel.position.set(0, -0.475, 0);
-    this.leftCapeSeg3.add(leftCapeTassel);
-
-    // Right Cape Chain
-    this.rightCapeSeg1 = new THREE.Group();
-    this.rightCapeSeg1.position.set(0.18, 0.1, -0.22);
-    this.group.add(this.rightCapeSeg1);
-
-    const rightCapeMesh1 = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.4, 0.03), cloakMat);
-    rightCapeMesh1.position.y = -0.2;
-    this.rightCapeSeg1.add(rightCapeMesh1);
-
-    this.rightCapeSeg2 = new THREE.Group();
-    this.rightCapeSeg2.position.set(0, -0.4, 0);
-    this.rightCapeSeg1.add(this.rightCapeSeg2);
-
-    const rightCapeMesh2 = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.4, 0.02), cloakMat);
-    rightCapeMesh2.position.y = -0.2;
-    this.rightCapeSeg2.add(rightCapeMesh2);
-
-    this.rightCapeSeg3 = new THREE.Group();
-    this.rightCapeSeg3.position.set(0, -0.4, 0);
-    this.rightCapeSeg2.add(this.rightCapeSeg3);
-
-    const rightCapeMesh3 = new THREE.Mesh(new THREE.BoxGeometry(0.23, 0.4, 0.015), cloakMat);
-    rightCapeMesh3.position.y = -0.2;
-    this.rightCapeSeg3.add(rightCapeMesh3);
-
-    // Right Cape Tassel
-    const rightCapeTassel = new THREE.Mesh(bottomTasselGeo, goldMat);
-    rightCapeTassel.position.set(0, -0.475, 0);
-    this.rightCapeSeg3.add(rightCapeTassel);
-
-    // --- JOINTED LIMBS ---
-    const limbMat = new THREE.MeshLambertMaterial({ color: 0xe0e0e0 });
+    // â”€â”€ LEGS (puffy spacesuit legs) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const thighGeo = new THREE.BoxGeometry(0.22, 0.38, 0.22);
+    const calfGeo  = new THREE.BoxGeometry(0.2,  0.36, 0.2);
+    const bootGeo  = new THREE.BoxGeometry(0.22, 0.12, 0.28);
 
     // Left Leg
     this.leftLeg = new THREE.Group();
-    this.leftLeg.position.set(-0.2, -0.6, 0);
+    this.leftLeg.position.set(-0.22, -0.6, 0);
     this.group.add(this.leftLeg);
 
-    const thighGeo = new THREE.BoxGeometry(0.16, 0.35, 0.16);
-    const leftThigh = new THREE.Mesh(thighGeo, limbMat);
-    leftThigh.position.y = -0.175; // pivot at top of thigh
+    const leftThigh = new THREE.Mesh(thighGeo, suitMat);
+    leftThigh.position.y = -0.19;
     this.leftLeg.add(leftThigh);
+    // Orange knee pad
+    const lKneePad = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.06, 0.22), suitAccent);
+    lKneePad.position.y = -0.38;
+    this.leftLeg.add(lKneePad);
 
     this.leftKnee = new THREE.Group();
-    this.leftKnee.position.set(0, -0.35, 0);
+    this.leftKnee.position.set(0, -0.38, 0);
     this.leftLeg.add(this.leftKnee);
 
-    // Calf (Boot style: dark color)
-    const bootMat = new THREE.MeshLambertMaterial({ color: 0x1f1f1f });
-    const calfGeo = new THREE.BoxGeometry(0.14, 0.35, 0.14);
-    
-    const leftCalf = new THREE.Mesh(calfGeo, bootMat);
-    leftCalf.position.y = -0.175; // pivot at knee
+    const leftCalf = new THREE.Mesh(calfGeo, suitMat);
+    leftCalf.position.y = -0.18;
     this.leftKnee.add(leftCalf);
-
-    // Left boot fold band
-    const leftBootBand = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.16), goldMat);
-    leftBootBand.position.y = -0.05; // top of boot
-    this.leftKnee.add(leftBootBand);
+    const leftBoot = new THREE.Mesh(bootGeo, bootMat);
+    leftBoot.position.set(0, -0.38, 0.03);
+    this.leftKnee.add(leftBoot);
 
     // Right Leg
     this.rightLeg = new THREE.Group();
-    this.rightLeg.position.set(0.2, -0.6, 0);
+    this.rightLeg.position.set(0.22, -0.6, 0);
     this.group.add(this.rightLeg);
 
-    const rightThigh = new THREE.Mesh(thighGeo, limbMat);
-    rightThigh.position.y = -0.175;
+    const rightThigh = new THREE.Mesh(thighGeo, suitMat);
+    rightThigh.position.y = -0.19;
     this.rightLeg.add(rightThigh);
+    const rKneePad = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.06, 0.22), suitAccent);
+    rKneePad.position.y = -0.38;
+    this.rightLeg.add(rKneePad);
 
     this.rightKnee = new THREE.Group();
-    this.rightKnee.position.set(0, -0.35, 0);
+    this.rightKnee.position.set(0, -0.38, 0);
     this.rightLeg.add(this.rightKnee);
 
-    const rightCalf = new THREE.Mesh(calfGeo, bootMat);
-    rightCalf.position.y = -0.175;
+    const rightCalf = new THREE.Mesh(calfGeo, suitMat);
+    rightCalf.position.y = -0.18;
     this.rightKnee.add(rightCalf);
+    const rightBoot = new THREE.Mesh(bootGeo, bootMat);
+    rightBoot.position.set(0, -0.38, 0.03);
+    this.rightKnee.add(rightBoot);
 
-    // Right boot fold band
-    const rightBootBand = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.16), goldMat);
-    rightBootBand.position.y = -0.05;
-    this.rightKnee.add(rightBootBand);
+    // â”€â”€ ARMS (puffy spacesuit arms) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const upperArmGeo = new THREE.BoxGeometry(0.2, 0.38, 0.2);
+    const forearmGeo  = new THREE.BoxGeometry(0.18, 0.34, 0.18);
+    const gloveGeo    = new THREE.BoxGeometry(0.16, 0.1, 0.16);
+    const gloveMat    = new THREE.MeshLambertMaterial({ color: 0x333333 });
 
     // Left Arm
     this.leftArm = new THREE.Group();
-    this.leftArm.position.set(-0.43, 0.2, 0);
+    this.leftArm.position.set(-0.5, 0.18, 0);
     this.group.add(this.leftArm);
 
-    const upperArmGeo = new THREE.BoxGeometry(0.14, 0.35, 0.14);
-    const leftUpperArm = new THREE.Mesh(upperArmGeo, limbMat);
-    leftUpperArm.position.y = -0.175;
+    const leftUpperArm = new THREE.Mesh(upperArmGeo, suitMat);
+    leftUpperArm.position.y = -0.19;
     this.leftArm.add(leftUpperArm);
+    // Orange shoulder ring
+    const lShoulderRing = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.06, 0.22), suitAccent);
+    lShoulderRing.position.y = -0.01;
+    this.leftArm.add(lShoulderRing);
 
     this.leftElbow = new THREE.Group();
-    this.leftElbow.position.set(0, -0.35, 0);
+    this.leftElbow.position.set(0, -0.38, 0);
     this.leftArm.add(this.leftElbow);
 
-    const forearmGeo = new THREE.BoxGeometry(0.12, 0.32, 0.12);
-    const leftForearm = new THREE.Mesh(forearmGeo, limbMat);
-    leftForearm.position.y = -0.16;
+    const leftForearm = new THREE.Mesh(forearmGeo, suitMat);
+    leftForearm.position.y = -0.17;
     this.leftElbow.add(leftForearm);
-
-    // Left cuff
-    const leftCuff = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.08, 0.14), goldMat);
-    leftCuff.position.y = -0.24; // bottom of forearm
-    this.leftElbow.add(leftCuff);
+    const leftGlove = new THREE.Mesh(gloveGeo, gloveMat);
+    leftGlove.position.y = -0.36;
+    this.leftElbow.add(leftGlove);
 
     // Right Arm
     this.rightArm = new THREE.Group();
-    this.rightArm.position.set(0.43, 0.2, 0);
+    this.rightArm.position.set(0.5, 0.18, 0);
     this.group.add(this.rightArm);
 
-    const rightUpperArm = new THREE.Mesh(upperArmGeo, limbMat);
-    rightUpperArm.position.y = -0.175;
+    const rightUpperArm = new THREE.Mesh(upperArmGeo, suitMat);
+    rightUpperArm.position.y = -0.19;
     this.rightArm.add(rightUpperArm);
+    const rShoulderRing = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.06, 0.22), suitAccent);
+    rShoulderRing.position.y = -0.01;
+    this.rightArm.add(rShoulderRing);
 
     this.rightElbow = new THREE.Group();
-    this.rightElbow.position.set(0, -0.35, 0);
+    this.rightElbow.position.set(0, -0.38, 0);
     this.rightArm.add(this.rightElbow);
 
-    const rightForearm = new THREE.Mesh(forearmGeo, limbMat);
-    rightForearm.position.y = -0.16;
+    const rightForearm = new THREE.Mesh(forearmGeo, suitMat);
+    rightForearm.position.y = -0.17;
     this.rightElbow.add(rightForearm);
+    const rightGlove = new THREE.Mesh(gloveGeo, gloveMat);
+    rightGlove.position.y = -0.36;
+    this.rightElbow.add(rightGlove);
 
-    // Right cuff
-    const rightCuff = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.08, 0.14), goldMat);
-    rightCuff.position.y = -0.24; // bottom of forearm
-    this.rightElbow.add(rightCuff);
+    // â”€â”€ WEAPONS (kept identical â€” attached to gloves) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const ironMat = new THREE.MeshLambertMaterial({ color: 0x2a2a2a });
 
-    // Long rifle (Laras Panjang)
+    // Right pistol
     this.gunGroup = new THREE.Group();
-    this.gunGroup.position.set(0.04, -0.24, 0.12);
-    this.gunGroup.rotation.set(-Math.PI / 2, 0, 0); // Pointing forward
-
-    const ironMat = new THREE.MeshLambertMaterial({ color: 0x1f1f1f });
-    const woodMat = new THREE.MeshLambertMaterial({ color: 0x5c4033 }); // Brown stock
-
-    // Gun body
-    const bodyMesh = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.1, 0.45), woodMat);
-    bodyMesh.position.set(0, 0, -0.1);
-    this.gunGroup.add(bodyMesh);
-
-    // Barrel (Laras Panjang)
-    const barrelMesh = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.65), ironMat);
-    barrelMesh.position.set(0, 0.02, -0.55);
-    this.gunGroup.add(barrelMesh);
-
-    // Scope
-    const scopeMesh = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, 0.18), ironMat);
-    scopeMesh.position.set(0, 0.06, -0.1);
-    this.gunGroup.add(scopeMesh);
-
-    this.gunGroup.visible = false; // Hidden until combat
+    this.gunGroup.position.set(0.02, -0.36, 0.1);
+    this.gunGroup.rotation.set(-Math.PI / 2, 0, 0);
+    this.gunGroup.visible = false;
+    const gBodyR = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.08, 0.22), ironMat);
+    gBodyR.position.set(0, 0, -0.08);
+    this.gunGroup.add(gBodyR);
+    const gGripR = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.12, 0.05),
+      new THREE.MeshLambertMaterial({ color: 0x1a1a1a }));
+    gGripR.position.set(0, -0.04, 0.04);
+    this.gunGroup.add(gGripR);
+    const gBarrelR = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.025, 0.08), ironMat);
+    gBarrelR.position.set(0, 0.015, -0.21);
+    this.gunGroup.add(gBarrelR);
     this.rightElbow.add(this.gunGroup);
 
-    // Muzzle Flash (right rifle)
     const flashMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
-    this.muzzleFlash = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.07, 0.18, 6), flashMat);
+    this.muzzleFlash = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.01, 0.055, 0.12, 6), flashMat);
     this.muzzleFlash.rotation.x = Math.PI / 2;
-    this.muzzleFlash.position.set(0, 0.02, -0.88);
+    this.muzzleFlash.position.set(0, 0.015, -0.26);
     this.muzzleFlash.visible = false;
     this.gunGroup.add(this.muzzleFlash);
 
-    this.muzzleLight = new THREE.PointLight(0xffaa00, 2, 5);
-    this.muzzleLight.position.set(0, 0.02, -0.9);
+    this.muzzleLight = new THREE.PointLight(0xffaa00, 1.5, 4);
+    this.muzzleLight.position.set(0, 0.015, -0.28);
     this.muzzleLight.visible = false;
     this.gunGroup.add(this.muzzleLight);
 
-    // --- LEFT HAND PISTOL ---
+    // Left pistol
     this.pistolGroup = new THREE.Group();
-    this.pistolGroup.position.set(-0.04, -0.24, 0.1);
+    this.pistolGroup.position.set(-0.02, -0.36, 0.1);
     this.pistolGroup.rotation.set(-Math.PI / 2, 0, 0);
-    this.pistolGroup.visible = false; // Hidden until combat
-
-    const pistolIron = new THREE.MeshLambertMaterial({ color: 0x2a2a2a });
-
-    // Pistol slide
-    const pistolBody = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.08, 0.22), pistolIron);
-    pistolBody.position.set(0, 0, -0.08);
-    this.pistolGroup.add(pistolBody);
-
-    // Pistol grip
-    const pistolGrip = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.12, 0.05), new THREE.MeshLambertMaterial({ color: 0x1a1a1a }));
-    pistolGrip.position.set(0, -0.04, 0.04);
-    this.pistolGroup.add(pistolGrip);
-
-    // Pistol barrel tip
-    const pistolBarrel = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.025, 0.08), pistolIron);
-    pistolBarrel.position.set(0, 0.015, -0.21);
-    this.pistolGroup.add(pistolBarrel);
-
+    this.pistolGroup.visible = false;
+    const gBodyL = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.08, 0.22), ironMat);
+    gBodyL.position.set(0, 0, -0.08);
+    this.pistolGroup.add(gBodyL);
+    const gGripL = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.12, 0.05),
+      new THREE.MeshLambertMaterial({ color: 0x1a1a1a }));
+    gGripL.position.set(0, -0.04, 0.04);
+    this.pistolGroup.add(gGripL);
+    const gBarrelL = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.025, 0.08), ironMat);
+    gBarrelL.position.set(0, 0.015, -0.21);
+    this.pistolGroup.add(gBarrelL);
     this.leftElbow.add(this.pistolGroup);
 
-    // Muzzle flash for pistol (left hand)
     const flashMat2 = new THREE.MeshBasicMaterial({ color: 0xffcc44 });
-    this.muzzleFlashL = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.055, 0.12, 6), flashMat2);
+    this.muzzleFlashL = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.01, 0.055, 0.12, 6), flashMat2);
     this.muzzleFlashL.rotation.x = Math.PI / 2;
     this.muzzleFlashL.position.set(0, 0.015, -0.26);
     this.muzzleFlashL.visible = false;
@@ -464,6 +390,29 @@ export class Player {
     this.muzzleLightL.position.set(0, 0.015, -0.28);
     this.muzzleLightL.visible = false;
     this.pistolGroup.add(this.muzzleLightL);
+
+    // â”€â”€ CAPE / COAT STUBS (no-op Groups so animation code compiles) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // The astronaut suit has no cape â€” stub objects satisfy the physics anim refs
+    const _stub = () => new THREE.Group();
+    this.leftCapeSeg1  = _stub(); this.group.add(this.leftCapeSeg1);
+    this.leftCapeSeg2  = _stub(); this.leftCapeSeg1.add(this.leftCapeSeg2);
+    this.leftCapeSeg3  = _stub(); this.leftCapeSeg2.add(this.leftCapeSeg3);
+    this.leftCapeSeg4  = _stub(); this.leftCapeSeg3.add(this.leftCapeSeg4);
+    this.rightCapeSeg1 = _stub(); this.group.add(this.rightCapeSeg1);
+    this.rightCapeSeg2 = _stub(); this.rightCapeSeg1.add(this.rightCapeSeg2);
+    this.rightCapeSeg3 = _stub(); this.rightCapeSeg2.add(this.rightCapeSeg3);
+    this.rightCapeSeg4 = _stub(); this.rightCapeSeg3.add(this.rightCapeSeg4);
+    this.frontCoatL    = _stub(); this.group.add(this.frontCoatL);
+    this.frontCoatL2   = _stub(); this.frontCoatL.add(this.frontCoatL2);
+    this.frontCoatR    = _stub(); this.group.add(this.frontCoatR);
+    this.frontCoatR2   = _stub(); this.frontCoatR.add(this.frontCoatR2);
+
+    this.group.traverse((child) => {
+      if (child.isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
+      }
+    });
 
     this.muzzleParticles = [];
   }
@@ -501,8 +450,8 @@ export class Player {
   }
 
   /**
-   * Main update — call each frame.
-   * @param {number} delta — seconds
+   * Main update â€” call each frame.
+   * @param {number} delta â€” seconds
    * @param {InputManager} input
    * @param {THREE.Camera} camera
    */
@@ -539,7 +488,7 @@ export class Player {
     }
 
     if (Math.abs(mx) < 0.01 && Math.abs(mz) < 0.01) {
-      // No input — decelerate
+      // No input â€” decelerate
       this.physics.setHorizontalVelocity(
         this.physics.velocity.x * 0.8,
         this.physics.velocity.z * 0.8
@@ -573,7 +522,7 @@ export class Player {
     this.physics.velocity.x = THREE.MathUtils.lerp(this.physics.velocity.x, targetVX, lerpFactor);
     this.physics.velocity.z = THREE.MathUtils.lerp(this.physics.velocity.z, targetVZ, lerpFactor);
 
-    // Face direction of movement — update target angle, NOT current rotation
+    // Face direction of movement â€” update target angle, NOT current rotation
     if (this._hasTarget && this._targetEnemyPos) {
       const dx = this._targetEnemyPos.x - this.position.x;
       const dz = this._targetEnemyPos.z - this.position.z;
@@ -588,18 +537,34 @@ export class Player {
   }
 
   /**
-   * @private — Jump & jump hold
+   * @private â€” Jump & jump hold
    */
   _handleJump(delta, input) {
     // Jump mechanics disabled in favor of combat system
   }
 
   /**
-   * @private — Fly upward (Faster and punchier lift-off)
+   * @private â€” Fly upward (Faster and punchier lift-off)
    */
   _handleTool(delta, input, camera) {
-    if (input.tool) {
-      // Fly faster and more naturally upwards
+    // If energy drops to 0, trigger fatigue
+    if (this.energy <= 0) {
+      this._flightFatigued = true;
+    }
+    // Recover fatigue once energy reaches 15%
+    if (this._flightFatigued && this.energy >= 15.0) {
+      this._flightFatigued = false;
+    }
+
+    // If holding fly button, not fatigued, and has energy
+    if (input.tool && !this._flightFatigued && this.energy > 0) {
+      // Consume energy
+      this.energy = Math.max(0, this.energy - delta * 30.0);
+
+      // Play thruster sound
+      soundManager.setThrusterActive(true);
+
+      // Fly upward
       this.physics.velocity.y = THREE.MathUtils.lerp(
         this.physics.velocity.y,
         9.0, // target upward speed
@@ -610,18 +575,22 @@ export class Player {
         this.state = 'gliding';
       }
     } else {
+      // Not flying (or fatigued/out of energy) — turn off glider and thruster sound
       if (this._gliderActive) {
         this._gliderActive = false;
-        // Let natural physics take over (gravity falls back)
         if (this.onGround) {
           this.state = 'idle';
         }
       }
+      soundManager.setThrusterActive(false);
+
+      // Regenerate energy over time
+      this.energy = Math.min(this.maxEnergy, this.energy + delta * 12.0);
     }
   }
 
   /**
-   * @private — Artefact interaction & tower transmit (Instant pickup)
+   * @private â€” Artefact interaction & tower transmit (Instant pickup)
    */
   _handleArtefactInteraction(delta, input) {
     if (!this._nearArtefact) return;
@@ -655,16 +624,16 @@ export class Player {
   }
 
   /**
-   * @private — Visual animations (bob, lean, facing rotation)
+   * @private â€” Visual animations (bob, lean, facing rotation)
    */
   _animate(delta, input) {
-    // Facing rotation — shortest-angle lerp to prevent spinning
+    // Facing rotation â€” shortest-angle lerp to prevent spinning
     if (this._targetFacingAngle !== undefined) {
       // When locked onto an enemy, rotate faster for a snappy combat feel
       const rotSpeed = (this.isFiring || this._hasTarget) ? 0.3 : 0.15;
-      // Compute shortest angle difference (handles wrap-around ±π)
+      // Compute shortest angle difference (handles wrap-around Â±Ï€)
       let diff = this._targetFacingAngle - this.group.rotation.y;
-      // Normalize diff to -π..π
+      // Normalize diff to -Ï€..Ï€
       while (diff >  Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       this.group.rotation.y += diff * rotSpeed;
@@ -677,8 +646,19 @@ export class Player {
     
     if (this.state === 'walking' || this.state === 'running') {
       this._bobTime += delta * bobSpeed;
-      
-      // Bob the body up and down
+
+      // ── Footstep trigger: fire on each sine zero-crossing (foot hits ground)
+      if (this.onGround) {
+        const sinNow = Math.sin(this._bobTime);
+        if (this._footSinSign > 0 && sinNow <= 0) {
+          soundManager.playFootstep(this._nextFoot);
+          this._nextFoot = this._nextFoot === 'left' ? 'right' : 'left';
+        } else if (this._footSinSign <= 0 && sinNow > 0) {
+          soundManager.playFootstep(this._nextFoot);
+          this._nextFoot = this._nextFoot === 'left' ? 'right' : 'left';
+        }
+        this._footSinSign = sinNow;
+      }
       this.group.position.y = this.position.y + Math.sin(this._bobTime) * 0.05;
 
       const maxSwing = this.state === 'running' ? 0.75 : 0.4;
@@ -709,7 +689,9 @@ export class Player {
       }
 
     } else if (this.state === 'idle') {
-      this._bobTime = 0;
+      this._bobTime     = 0;
+      this._footSinSign = 1;
+      this._nextFoot    = 'left';
       
       // Smooth reset to idle position
       const tFactor = 0.15;
@@ -826,74 +808,104 @@ export class Player {
       this.pistolGroup.visible = false;
     }
 
-    // --- CAPE ANIMATION ---
+    // --- COAT PHYSICS ANIMATION (Dante-style) ---
     const speedX = this.physics.velocity.x;
     const speedZ = this.physics.velocity.z;
     const horizontalSpeed = Math.sqrt(speedX * speedX + speedZ * speedZ);
     const verticalSpeed = this.physics.velocity.y;
 
-    let baseCapeAngle = 0.15; // default hang angle
+    let baseCapeAngle = 0.12;
     let flutterSpeed = 10;
-    let flutterIntensity = 0.05;
+    let flutterIntensity = 0.04;
+    let frontSwingX = 0.0;  // front panels forward swing
+    let frontSwingZ = 0.0;  // front panels outward spread
 
     if (this._gliderActive) {
       if (verticalSpeed > 0.5) {
-        // Ascending: Wind from above pushes cape down (cling to back)
         baseCapeAngle = 0.02 - (verticalSpeed * 0.04);
-        baseCapeAngle = Math.max(-0.25, baseCapeAngle); // prevent clipping inside body
+        baseCapeAngle = Math.max(-0.3, baseCapeAngle);
         flutterSpeed = 16;
         flutterIntensity = 0.06;
+        frontSwingX = -0.4;   // front panels blow backward (forward of character)
+        frontSwingZ = 0.5;
       } else {
-        // Gliding horizontally / descending: Wind from front/below blows cape backward/up
-        baseCapeAngle = 1.2 - (verticalSpeed * 0.05);
-        flutterSpeed = 24;
-        flutterIntensity = 0.2;
+        baseCapeAngle = 1.3 - (verticalSpeed * 0.05);
+        flutterSpeed = 26;
+        flutterIntensity = 0.22;
+        frontSwingX = -0.8;
+        frontSwingZ = 0.7;
       }
-    } else if (this.state === 'walking' || this.state === 'running') {
-      // Moving on ground: Cape swings back based on speed
-      baseCapeAngle = 0.2 + (horizontalSpeed / RUN_SPEED) * 0.5;
-      flutterSpeed = this.state === 'running' ? 18 : 12;
-      flutterIntensity = this.state === 'running' ? 0.15 : 0.08;
+    } else if (this.state === 'running') {
+      baseCapeAngle = 0.55 + (horizontalSpeed / RUN_SPEED) * 0.5;
+      flutterSpeed = 20;
+      flutterIntensity = 0.18;
+      frontSwingX = 0.35;
+      frontSwingZ = 0.45;
+    } else if (this.state === 'walking') {
+      baseCapeAngle = 0.25 + (horizontalSpeed / RUN_SPEED) * 0.3;
+      flutterSpeed = 12;
+      flutterIntensity = 0.08;
+      frontSwingX = 0.12;
+      frontSwingZ = 0.2;
     } else if (this.state === 'jumping' || this.state === 'falling') {
-      // In air: Cape trails vertical movement
-      baseCapeAngle = 0.15 - (verticalSpeed * 0.08);
-      flutterSpeed = 14;
-      flutterIntensity = 0.1;
+      baseCapeAngle = 0.18 - (verticalSpeed * 0.09);
+      flutterSpeed = 15;
+      flutterIntensity = 0.12;
+      frontSwingX = 0.2;
+      frontSwingZ = 0.25;
     } else {
-      // Idle: gentle breeze
-      baseCapeAngle = 0.1;
-      flutterSpeed = 4;
-      flutterIntensity = 0.03;
+      // Idle: gentle atmospheric flutter
+      baseCapeAngle = 0.08;
+      flutterSpeed = 3;
+      flutterIntensity = 0.025;
+      frontSwingX = 0.0;
+      frontSwingZ = 0.05;
     }
 
     const capeTime = Date.now() * 0.001 * flutterSpeed;
-    
-    // Left Cape Panel rotations
-    this.leftCapeSeg1.rotation.x = THREE.MathUtils.lerp(this.leftCapeSeg1.rotation.x, baseCapeAngle + Math.sin(capeTime) * flutterIntensity, 0.1);
-    this.leftCapeSeg2.rotation.x = THREE.MathUtils.lerp(this.leftCapeSeg2.rotation.x, baseCapeAngle * 0.8 + Math.sin(capeTime - 1.0) * flutterIntensity * 1.2, 0.1);
-    this.leftCapeSeg3.rotation.x = THREE.MathUtils.lerp(this.leftCapeSeg3.rotation.x, baseCapeAngle * 0.6 + Math.sin(capeTime - 2.0) * flutterIntensity * 1.5, 0.1);
+    const LR = 0.09; // lerp rate for coat (heavier fabric = slower response)
 
-    // Right Cape Panel rotations (slight phase offset for natural async flutter)
-    this.rightCapeSeg1.rotation.x = THREE.MathUtils.lerp(this.rightCapeSeg1.rotation.x, baseCapeAngle + Math.sin(capeTime + 0.5) * flutterIntensity, 0.1);
-    this.rightCapeSeg2.rotation.x = THREE.MathUtils.lerp(this.rightCapeSeg2.rotation.x, baseCapeAngle * 0.8 + Math.sin(capeTime - 0.5) * flutterIntensity * 1.2, 0.1);
-    this.rightCapeSeg3.rotation.x = THREE.MathUtils.lerp(this.rightCapeSeg3.rotation.x, baseCapeAngle * 0.6 + Math.sin(capeTime - 1.5) * flutterIntensity * 1.5, 0.1);
+    // â”€â”€ Back panels â€” each segment inherits parent rotation but adds own flutter â”€â”€
+    // Left panel
+    this.leftCapeSeg1.rotation.x = THREE.MathUtils.lerp(this.leftCapeSeg1.rotation.x, baseCapeAngle + Math.sin(capeTime) * flutterIntensity, LR);
+    this.leftCapeSeg2.rotation.x = THREE.MathUtils.lerp(this.leftCapeSeg2.rotation.x, baseCapeAngle * 0.85 + Math.sin(capeTime - 0.8) * flutterIntensity * 1.15, LR);
+    this.leftCapeSeg3.rotation.x = THREE.MathUtils.lerp(this.leftCapeSeg3.rotation.x, baseCapeAngle * 0.65 + Math.sin(capeTime - 1.6) * flutterIntensity * 1.35, LR);
+    this.leftCapeSeg4.rotation.x = THREE.MathUtils.lerp(this.leftCapeSeg4.rotation.x, baseCapeAngle * 0.45 + Math.sin(capeTime - 2.5) * flutterIntensity * 1.6, LR);
 
-    // Spread cape panels outwards when running/flying (using Z-axis rotation)
-    const baseSpread = 0.08; // slight natural split
-    const speedSpread = this._gliderActive ? 0.35 : (this.state === 'running' ? 0.22 : (this.state === 'walking' ? 0.12 : 0.0));
-    
-    this.leftCapeSeg1.rotation.z = THREE.MathUtils.lerp(this.leftCapeSeg1.rotation.z, -baseSpread - speedSpread, 0.1);
-    this.rightCapeSeg1.rotation.z = THREE.MathUtils.lerp(this.rightCapeSeg1.rotation.z, baseSpread + speedSpread, 0.1);
-    
-    // Side swing (heading changes and wind)
-    const sideSwing = Math.sin(Date.now() * 0.001 * (flutterSpeed * 0.5)) * flutterIntensity * 0.5;
-    this.leftCapeSeg1.rotation.y = THREE.MathUtils.lerp(this.leftCapeSeg1.rotation.y, sideSwing, 0.1);
-    this.leftCapeSeg2.rotation.y = THREE.MathUtils.lerp(this.leftCapeSeg2.rotation.y, sideSwing * 1.2, 0.1);
-    this.leftCapeSeg3.rotation.y = THREE.MathUtils.lerp(this.leftCapeSeg3.rotation.y, sideSwing * 1.5, 0.1);
+    // Right panel (phase offset for organic look)
+    this.rightCapeSeg1.rotation.x = THREE.MathUtils.lerp(this.rightCapeSeg1.rotation.x, baseCapeAngle + Math.sin(capeTime + 0.4) * flutterIntensity, LR);
+    this.rightCapeSeg2.rotation.x = THREE.MathUtils.lerp(this.rightCapeSeg2.rotation.x, baseCapeAngle * 0.85 + Math.sin(capeTime - 0.4) * flutterIntensity * 1.15, LR);
+    this.rightCapeSeg3.rotation.x = THREE.MathUtils.lerp(this.rightCapeSeg3.rotation.x, baseCapeAngle * 0.65 + Math.sin(capeTime - 1.2) * flutterIntensity * 1.35, LR);
+    this.rightCapeSeg4.rotation.x = THREE.MathUtils.lerp(this.rightCapeSeg4.rotation.x, baseCapeAngle * 0.45 + Math.sin(capeTime - 2.1) * flutterIntensity * 1.6, LR);
 
-    this.rightCapeSeg1.rotation.y = THREE.MathUtils.lerp(this.rightCapeSeg1.rotation.y, sideSwing, 0.1);
-    this.rightCapeSeg2.rotation.y = THREE.MathUtils.lerp(this.rightCapeSeg2.rotation.y, sideSwing * 1.2, 0.1);
-    this.rightCapeSeg3.rotation.y = THREE.MathUtils.lerp(this.rightCapeSeg3.rotation.y, sideSwing * 1.5, 0.1);
+    // Lateral spread (coat opens wide when airborne / running)
+    const baseSpread = 0.06;
+    const speedSpread = this._gliderActive ? 0.4 : (this.state === 'running' ? 0.28 : (this.state === 'walking' ? 0.14 : 0.0));
+    this.leftCapeSeg1.rotation.z  = THREE.MathUtils.lerp(this.leftCapeSeg1.rotation.z,  -baseSpread - speedSpread, LR);
+    this.rightCapeSeg1.rotation.z = THREE.MathUtils.lerp(this.rightCapeSeg1.rotation.z,   baseSpread + speedSpread, LR);
+
+    // Side swing (wind / direction changes)
+    const sideSwing = Math.sin(Date.now() * 0.001 * (flutterSpeed * 0.4)) * flutterIntensity * 0.45;
+    this.leftCapeSeg1.rotation.y  = THREE.MathUtils.lerp(this.leftCapeSeg1.rotation.y,  sideSwing, LR);
+    this.leftCapeSeg2.rotation.y  = THREE.MathUtils.lerp(this.leftCapeSeg2.rotation.y,  sideSwing * 1.3, LR);
+    this.leftCapeSeg3.rotation.y  = THREE.MathUtils.lerp(this.leftCapeSeg3.rotation.y,  sideSwing * 1.7, LR);
+    this.leftCapeSeg4.rotation.y  = THREE.MathUtils.lerp(this.leftCapeSeg4.rotation.y,  sideSwing * 2.1, LR);
+    this.rightCapeSeg1.rotation.y = THREE.MathUtils.lerp(this.rightCapeSeg1.rotation.y, sideSwing, LR);
+    this.rightCapeSeg2.rotation.y = THREE.MathUtils.lerp(this.rightCapeSeg2.rotation.y, sideSwing * 1.3, LR);
+    this.rightCapeSeg3.rotation.y = THREE.MathUtils.lerp(this.rightCapeSeg3.rotation.y, sideSwing * 1.7, LR);
+    this.rightCapeSeg4.rotation.y = THREE.MathUtils.lerp(this.rightCapeSeg4.rotation.y, sideSwing * 2.1, LR);
+
+    // â”€â”€ Front coat panels â€” swing outward and back when moving (Dante billow) â”€â”€
+    const frontFlutter = Math.sin(capeTime * 0.7) * flutterIntensity * 0.6;
+    this.frontCoatL.rotation.x  = THREE.MathUtils.lerp(this.frontCoatL.rotation.x,  -frontSwingX + frontFlutter, LR);
+    this.frontCoatL.rotation.z  = THREE.MathUtils.lerp(this.frontCoatL.rotation.z,  -frontSwingZ, LR);
+    this.frontCoatL2.rotation.x = THREE.MathUtils.lerp(this.frontCoatL2.rotation.x, -frontSwingX * 0.6 + frontFlutter * 1.3, LR);
+
+    this.frontCoatR.rotation.x  = THREE.MathUtils.lerp(this.frontCoatR.rotation.x,  -frontSwingX + frontFlutter, LR);
+    this.frontCoatR.rotation.z  = THREE.MathUtils.lerp(this.frontCoatR.rotation.z,   frontSwingZ, LR);
+    this.frontCoatR2.rotation.x = THREE.MathUtils.lerp(this.frontCoatR2.rotation.x, -frontSwingX * 0.6 + frontFlutter * 1.3, LR);
+
+
 
     // Apply slope-aligned tilt rotation
     let targetTiltX = 0;
@@ -1045,16 +1057,7 @@ export class Player {
 
   takeDamage(amount) {
     this.hp = Math.max(0, this.hp - amount);
-    // Visual flash feedback (e.g. red screen or red color on character)
-    this.group.traverse(child => {
-      if (child.isMesh && child.material) {
-        const origColor = child.material.color.getHex();
-        child.material.color.setHex(0xff0000);
-        setTimeout(() => {
-          if (child.material) child.material.color.setHex(origColor);
-        }, 80);
-      }
-    });
+    // Visual flash feedback removed as per user request
     return this.hp <= 0;
   }
 
