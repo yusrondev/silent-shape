@@ -62,9 +62,14 @@ export class Player {
     this.facingAngle = 0;
 
     // Bob animation
-    this._bobTime    = 0;
-    this._footSinSign = 1;  // tracks sign of sin(_bobTime) to detect foot-strike
-    this._nextFoot   = 'left';
+    this._bobTime     = 0;
+    this._footSinSign = 1;
+    this._nextFoot    = 'left';
+
+    // Dust particle system
+    this._prevOnGround  = false;
+    this._dustParticles = [];
+    this._dustPool      = [];
 
     /** HP & Combat state */
     this.hp = 100;
@@ -463,6 +468,7 @@ export class Player {
     this._animate(delta, input);
     this._updateParticles(delta);
     this._updateMuzzleParticles(delta);
+    this._updateDustParticles(delta);
 
     // Sync group to position
     this.group.position.copy(this.position);
@@ -573,6 +579,8 @@ export class Player {
       if (!this._gliderActive) {
         this._gliderActive = true;
         this.state = 'gliding';
+        // Takeoff dust burst — kicked up from ground
+        if (this.onGround) this._spawnDustBurst(12, 3.8);
       }
     } else {
       // Not flying (or fatigued/out of energy) — turn off glider and thruster sound
@@ -652,9 +660,11 @@ export class Player {
         const sinNow = Math.sin(this._bobTime);
         if (this._footSinSign > 0 && sinNow <= 0) {
           soundManager.playFootstep(this._nextFoot);
+          this._spawnDustBurst(3, 1.2); // small per-step puff
           this._nextFoot = this._nextFoot === 'left' ? 'right' : 'left';
         } else if (this._footSinSign <= 0 && sinNow > 0) {
           soundManager.playFootstep(this._nextFoot);
+          this._spawnDustBurst(3, 1.2);
           this._nextFoot = this._nextFoot === 'left' ? 'right' : 'left';
         }
         this._footSinSign = sinNow;
@@ -924,9 +934,94 @@ export class Player {
     this.position.copy(resolvedPos);
     this.onGround = onGround;
 
+    // Landing dust burst — detect ground contact transition
+    if (onGround && !this._prevOnGround && this.physics.velocity.y < -1.5) {
+      this._spawnDustBurst(18, 4.5);
+    }
+    this._prevOnGround = onGround;
+
     if (!onGround && this.physics.velocity.y < -2 && this.state !== 'gliding') {
       this.state = 'falling';
     }
+  }
+
+  /**
+   * Spawn a radial burst of dust particles at the player's feet.
+   * @param {number} count  — number of particles
+   * @param {number} speed  — outward spread speed (m/s)
+   */
+  _spawnDustBurst(count, speed) {
+    const basePos = this.position.clone();
+    // this.position.y is 1.3m above ground (Physics CHAR_HY offset)
+    // subtract that so dust spawns at ground/foot level
+    basePos.y = this.position.y - 1.25;
+
+    for (let i = 0; i < count; i++) {
+      let p;
+      if (this._dustPool.length > 0) {
+        p = this._dustPool.pop();
+        p.mesh.position.copy(basePos);
+        p.mesh.scale.set(1, 1, 1);
+        p.mesh.material.opacity = 0.55;
+        p.mesh.visible = true;
+        p.age = 0;
+      } else {
+        // Flat disc (PlaneGeometry) — looks like a ground puff
+        const geo = new THREE.CircleGeometry(0.18 + Math.random() * 0.14, 6);
+        const mat = new THREE.MeshBasicMaterial({
+          color: 0xc8b48a,      // sandy beige dust
+          transparent: true,
+          opacity: 0.55,
+          depthWrite: false,
+          side: THREE.DoubleSide
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.rotation.x = -Math.PI * 0.5; // lie flat on ground
+        mesh.position.copy(basePos);
+        this.scene.add(mesh);
+        p = { mesh, age: 0 };
+      }
+
+      // Random outward direction
+      const angle = Math.random() * Math.PI * 2;
+      const r     = 0.4 + Math.random() * 0.6; // lateral spread
+      p.velocity = new THREE.Vector3(
+        Math.cos(angle) * speed * r,
+        0.6 + Math.random() * 1.2,             // gentle upward drift
+        Math.sin(angle) * speed * r
+      );
+      p.maxAge   = 0.35 + Math.random() * 0.25;
+      p.mesh.rotation.y = Math.random() * Math.PI * 2;
+      this._dustParticles.push(p);
+    }
+  }
+
+  _updateDustParticles(delta) {
+    const active = [];
+    for (let i = 0; i < this._dustParticles.length; i++) {
+      const p = this._dustParticles[i];
+      p.age += delta;
+
+      p.mesh.position.addScaledVector(p.velocity, delta);
+      // Gravity drag on Y, lateral friction
+      p.velocity.y  -= delta * 2.8;  // light gravity — dust floats
+      p.velocity.x  *= 0.92;
+      p.velocity.z  *= 0.92;
+
+      // Expand disc as it rises, then fade
+      const t = p.age / p.maxAge;
+      const s = 1.0 + t * 1.4;            // grow from 1x to 2.4x
+      p.mesh.scale.set(s, s, s);
+      p.mesh.material.opacity = (1 - t) * 0.55;
+
+      if (p.age >= p.maxAge) {
+        p.mesh.visible = false;
+        this._dustPool.push(p);
+      } else {
+        active.push(p);
+      }
+    }
+    this._dustParticles = active;
   }
 
   _spawnTrailParticle(pos) {
