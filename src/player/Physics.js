@@ -56,7 +56,7 @@ export class Physics {
     _charBox.max.set(resolved.x + CHAR_HX, currentPos.y + CHAR_HY, currentPos.z + CHAR_HZ);
 
     for (const box of nearby) {
-      if (_charBox.intersectsBox(box)) {
+      if (box.meshRef && this._intersectsBuilding(_charBox, box.meshRef)) {
         resolved.x    = currentPos.x;
         this.velocity.x = 0;
         break;
@@ -68,7 +68,7 @@ export class Physics {
     _charBox.max.set(resolved.x + CHAR_HX, currentPos.y + CHAR_HY, resolved.z + CHAR_HZ);
 
     for (const box of nearby) {
-      if (_charBox.intersectsBox(box)) {
+      if (box.meshRef && this._intersectsBuilding(_charBox, box.meshRef)) {
         resolved.z    = currentPos.z;
         this.velocity.z = 0;
         break;
@@ -82,18 +82,30 @@ export class Physics {
     _charBox.max.set(resolved.x + CHAR_HX, resolved.y + CHAR_HY, resolved.z + CHAR_HZ);
 
     for (const box of nearby) {
-      if (!_charBox.intersectsBox(box)) continue;
+      const mesh = box.meshRef;
+      if (!mesh || !this._intersectsBuilding(_charBox, mesh)) continue;
 
-      const playerWasAboveTop = currentPos.y - CHAR_HY >= box.max.y - 0.2;
-      const playerWasBelowBot = currentPos.y + CHAR_HY <= box.min.y + 0.2;
+      if (!mesh.geometry.boundingBox) {
+        mesh.geometry.computeBoundingBox();
+      }
+
+      const invMat = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
+      const localPos = resolved.clone().applyMatrix4(invMat);
+      const localCurrent = currentPos.clone().applyMatrix4(invMat);
+      const localBox = mesh.geometry.boundingBox;
+
+      const playerWasAboveTop = localCurrent.y - CHAR_HY >= localBox.max.y - 0.2;
+      const playerWasBelowBot = localCurrent.y + CHAR_HY <= localBox.min.y + 0.2;
 
       if (playerWasAboveTop) {
-        resolved.y    = box.max.y + CHAR_HY;
+        localPos.y    = localBox.max.y + CHAR_HY;
+        resolved.copy(localPos.applyMatrix4(mesh.matrixWorld));
         onGround      = true;
-        this.standingBuilding = box.meshRef;
+        this.standingBuilding = mesh;
         if (this.velocity.y < 0) this.velocity.y = 0;
       } else if (playerWasBelowBot) {
-        resolved.y    = box.min.y - CHAR_HY;
+        localPos.y    = localBox.min.y - CHAR_HY;
+        resolved.copy(localPos.applyMatrix4(mesh.matrixWorld));
         if (this.velocity.y > 0) this.velocity.y = 0;
       }
       break;
@@ -108,6 +120,48 @@ export class Physics {
     }
 
     return { resolvedPos: resolved, onGround };
+  }
+
+  /**
+   * Helper to check intersection with oriented buildings in local space
+   * @private
+   */
+  _intersectsBuilding(charBox, mesh) {
+    // If not tilted, fallback to faster cached AABB intersects check
+    const isTilted = mesh.rotation.x !== 0 || mesh.rotation.z !== 0;
+    if (!isTilted && mesh.userData.cachedBox) {
+      return charBox.intersectsBox(mesh.userData.cachedBox);
+    }
+
+    if (!mesh.geometry.boundingBox) {
+      mesh.geometry.computeBoundingBox();
+    }
+
+    // Get inverse of world matrix to transform world coordinates to local space
+    const invMat = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
+
+    const localCharBox = new THREE.Box3();
+    const min = charBox.min;
+    const max = charBox.max;
+
+    // Transform all 8 corners to local space to build a tight local AABB
+    const corners = [
+      new THREE.Vector3(min.x, min.y, min.z),
+      new THREE.Vector3(min.x, min.y, max.z),
+      new THREE.Vector3(min.x, max.y, min.z),
+      new THREE.Vector3(min.x, max.y, max.z),
+      new THREE.Vector3(max.x, min.y, min.z),
+      new THREE.Vector3(max.x, min.y, max.z),
+      new THREE.Vector3(max.x, max.y, min.z),
+      new THREE.Vector3(max.x, max.y, max.z)
+    ];
+
+    for (const c of corners) {
+      c.applyMatrix4(invMat);
+      localCharBox.expandByPoint(c);
+    }
+
+    return localCharBox.intersectsBox(mesh.geometry.boundingBox);
   }
 
   /**
