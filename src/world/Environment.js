@@ -67,8 +67,10 @@ export class Environment {
     this.scene    = scene;
     this._ambient = null;
     this._sun     = null;
+    this._sunVisual = null;
     this._skyMesh = null;
-    this._currentBiome = null;
+    this._currentBiome = 'grey_district';
+    this._timeOfDay = 0.5 * Math.PI; // Start at midday
 
     this._setup();
   }
@@ -101,6 +103,15 @@ export class Environment {
     this._sun.shadow.normalBias    = 0.05;
     this.scene.add(this._sun);
     this.scene.add(this._sun.target);
+
+    // Visual Sun Sphere
+    const sunVisualGeo = new THREE.SphereGeometry(4, 8, 8);
+    const sunVisualMat = new THREE.MeshBasicMaterial({
+      color: 0xffe066,
+      toneMapped: false
+    });
+    this._sunVisual = new THREE.Mesh(sunVisualGeo, sunVisualMat);
+    this.scene.add(this._sunVisual);
 
     // ── Sky Gradient Mesh ──
     this._createSkyDome();
@@ -153,7 +164,7 @@ export class Environment {
    */
   applyBiome(biomeName, instant = true) {
     const biome = BIOMES[biomeName];
-    if (!biome || this._currentBiome === biomeName) return;
+    if (!biome) return;
     this._currentBiome = biomeName;
 
     if (instant) {
@@ -191,18 +202,123 @@ export class Environment {
   /**
    * Makes the sky dome and sun follow the camera position.
    * Call this each frame.
-   * @param {THREE.Vector3} cameraPosition
+   * @param {THREE.Vector3} playerPosition
+   * @param {number} delta
    */
-  update(playerPosition) {
+  update(playerPosition, delta = 0.016) {
+    const biome = BIOMES[this._currentBiome] || BIOMES.grey_district;
+
+    // Advance day/night cycle: full cycle takes 75 seconds
+    this._timeOfDay += delta * (Math.PI * 2 / 75.0);
+    if (this._timeOfDay > Math.PI * 2) this._timeOfDay -= Math.PI * 2;
+
+    // Sun moves in YZ plane
+    const radius = 60.0;
+    const sunY = Math.sin(this._timeOfDay) * radius;
+    const sunZ = Math.cos(this._timeOfDay) * radius;
+    this._sunOffset.set(-15, sunY, sunZ);
+
     if (this._skyMesh) {
       this._skyMesh.position.copy(playerPosition);
     }
+
     if (this._sun) {
       this._sun.position.copy(playerPosition).add(this._sunOffset);
       this._sun.target.position.copy(playerPosition);
       this._sun.target.updateMatrixWorld();
-      // Required after repositioning so shadow camera picks up the new position
       this._sun.shadow.camera.updateProjectionMatrix();
+
+      // Position visual sun
+      if (this._sunVisual) {
+        this._sunVisual.position.copy(playerPosition).add(this._sunOffset.clone().normalize().multiplyScalar(220));
+      }
+
+      // Dynamic day/sunset/night transition using smooth weight blending
+      const nSunY = sunY / radius; // -1.0 (midnight) to 1.0 (midday)
+      let wDay = 0.0, wSunset = 0.0, wNight = 0.0;
+
+      if (nSunY >= 0.25) {
+        wDay = 1.0;
+      } else if (nSunY >= 0.0) {
+        const t = nSunY / 0.25;
+        wDay = t;
+        wSunset = 1.0 - t;
+      } else if (nSunY >= -0.25) {
+        const t = nSunY / -0.25;
+        wNight = t;
+        wSunset = 1.0 - t;
+      } else {
+        wNight = 1.0;
+      }
+
+      // Define properties for the three states
+      const daySunColor = new THREE.Color(biome.sunColor || 0xfff5e0);
+      const daySunIntensity = biome.sunIntensity * 1.4;
+      const dayAmbientColor = new THREE.Color(biome.ambientColor);
+      const dayAmbientIntensity = biome.ambientIntensity * 1.2;
+      const daySkyTop = new THREE.Color(biome.skyTop);
+      const daySkyBottom = new THREE.Color(biome.skyBottom);
+      const dayFogColor = new THREE.Color(biome.fogColor);
+      const dayFogDensity = 0.005;
+
+      const sunsetSunColor = new THREE.Color(0xffaa44);
+      const sunsetSunIntensity = 0.45;
+      const sunsetAmbientColor = new THREE.Color(0x5a3c30);
+      const sunsetAmbientIntensity = 0.45;
+      const sunsetSkyTop = new THREE.Color(0x3a1c4c);
+      const sunsetSkyBottom = new THREE.Color(0xf15a24);
+      const sunsetFogColor = new THREE.Color(0x8a3c20);
+      const sunsetFogDensity = 0.012;
+
+      const nightSunColor = new THREE.Color(0x383e56);
+      const nightSunIntensity = 0.0;
+      const nightAmbientColor = new THREE.Color(0x383e56);
+      const nightAmbientIntensity = 0.28;
+      const nightSkyTop = new THREE.Color(0x0e1020);
+      const nightSkyBottom = new THREE.Color(0x1f223f);
+      const nightFogColor = new THREE.Color(0x181a30);
+      const nightFogDensity = 0.015;
+
+      // Linearly interpolate color vectors
+      const finalSunColor = new THREE.Color()
+        .add(daySunColor.clone().multiplyScalar(wDay))
+        .add(sunsetSunColor.clone().multiplyScalar(wSunset))
+        .add(nightSunColor.clone().multiplyScalar(wNight));
+
+      const finalSunIntensity = daySunIntensity * wDay + sunsetSunIntensity * wSunset + nightSunIntensity * wNight;
+
+      const finalAmbientColor = new THREE.Color()
+        .add(dayAmbientColor.clone().multiplyScalar(wDay))
+        .add(sunsetAmbientColor.clone().multiplyScalar(wSunset))
+        .add(nightAmbientColor.clone().multiplyScalar(wNight));
+
+      const finalAmbientIntensity = dayAmbientIntensity * wDay + sunsetAmbientIntensity * wSunset + nightAmbientIntensity * wNight;
+
+      const finalSkyTop = new THREE.Color()
+        .add(daySkyTop.clone().multiplyScalar(wDay))
+        .add(sunsetSkyTop.clone().multiplyScalar(wSunset))
+        .add(nightSkyTop.clone().multiplyScalar(wNight));
+
+      const finalSkyBottom = new THREE.Color()
+        .add(daySkyBottom.clone().multiplyScalar(wDay))
+        .add(sunsetSkyBottom.clone().multiplyScalar(wSunset))
+        .add(nightSkyBottom.clone().multiplyScalar(wNight));
+
+      const finalFogColor = new THREE.Color()
+        .add(dayFogColor.clone().multiplyScalar(wDay))
+        .add(sunsetFogColor.clone().multiplyScalar(wSunset))
+        .add(nightFogColor.clone().multiplyScalar(wNight));
+
+      const finalFogDensity = dayFogDensity * wDay + sunsetFogDensity * wSunset + nightFogDensity * wNight;
+
+      // Apply lerped values smoothly
+      this._sun.color.copy(finalSunColor);
+      this._sun.intensity = finalSunIntensity;
+      this._ambient.color.copy(finalAmbientColor);
+      this._ambient.intensity = finalAmbientIntensity;
+      this.scene.fog.color.copy(finalFogColor);
+      this.scene.fog.density = finalFogDensity;
+      this._updateSkyColors(finalSkyTop.getHex(), finalSkyBottom.getHex());
     }
   }
 }

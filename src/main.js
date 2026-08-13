@@ -251,7 +251,19 @@ class SilentShapeGame {
     }
 
     // 4. Sky and shadow sun follows player
-    this.environment.update(this.player.position);
+    this.environment.update(this.player.position, delta);
+
+    // Adjust player head flashlight based on time of day (much brighter at night)
+    if (this.player.visorLight) {
+      const isNight = this.environment._sunOffset.y < 0;
+      if (isNight) {
+        this.player.visorLight.intensity = 95.0;
+        this.player.visorLight.distance = 80.0;
+      } else {
+        this.player.visorLight.intensity = 12.0;
+        this.player.visorLight.distance = 45.0;
+      }
+    }
 
     // 5. Artefact proximity (throttled to every 3 frames)
     this._artefactCheckFrame++;
@@ -272,21 +284,41 @@ class SilentShapeGame {
   _updateCombat(delta) {
     const playerPos = this.player.position;
 
-    // 1. Spawning enemies randomly around the player
+    // 1. Spawning enemies randomly around the player (avoiding building collisions)
     this.enemySpawnTimer += delta;
     if (this.enemySpawnTimer >= 1.5) {
       this.enemySpawnTimer = 0;
       if (this.enemies.length < 5) {
-        // Find a random position around player
-        const angle = Math.random() * Math.PI * 2;
-        const radius = 15.0 + Math.random() * 15.0;
-        const sx = playerPos.x + Math.sin(angle) * radius;
-        const sz = playerPos.z + Math.cos(angle) * radius;
-        const sy = getGroundHeight(sx, sz);
-        
-        // Ensure not inside initial spawn point
-        if (Math.hypot(sx - 32, sz - 32) > 8) {
-          const enemy = new Enemy(this.scene, new THREE.Vector3(sx, sy, sz));
+        let sx = 0, sz = 0, sy = 0;
+        let attempts = 0;
+        let valid = false;
+
+        while (attempts < 15 && !valid) {
+          attempts++;
+          const angle = Math.random() * Math.PI * 2;
+          const radius = 15.0 + Math.random() * 15.0;
+          sx = playerPos.x + Math.sin(angle) * radius;
+          sz = playerPos.z + Math.cos(angle) * radius;
+          sy = getGroundHeight(sx, sz);
+
+          // Check if coordinate intersects any building bounding box
+          let insideBuilding = false;
+          const testPt = new THREE.Vector3(sx, sy + 0.5, sz);
+          for (const b of this.chunkManager.buildings) {
+            if (b.userData.cachedBox && b.userData.cachedBox.containsPoint(testPt)) {
+              insideBuilding = true;
+              break;
+            }
+          }
+
+          if (!insideBuilding && Math.hypot(sx - 32, sz - 32) > 8) {
+            valid = true;
+          }
+        }
+
+        if (valid) {
+          const type = Math.random() > 0.45 ? 'spider' : 'alien';
+          const enemy = new Enemy(this.scene, new THREE.Vector3(sx, sy, sz), type);
           this.enemies.push(enemy);
         }
       }
@@ -298,6 +330,7 @@ class SilentShapeGame {
 
     for (let i = 0; i < this.enemies.length; i++) {
       const enemy = this.enemies[i];
+      if (enemy.isDead) continue; // Skip dissolving/dead targets
       const dist = playerPos.distanceTo(enemy.group.position);
       if (dist < minDistance) {
         minDistance = dist;
@@ -358,9 +391,7 @@ class SilentShapeGame {
         bMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), bulletDir);
         this.scene.add(bMesh);
 
-        // Glowing orange trail light
-        const bLight = new THREE.PointLight(0xff8800, 1.0, 2.5);
-        bMesh.add(bLight);
+        // Player bullet glow relies on MeshBasicMaterial alone
 
         this.playerProjectiles.push({
           mesh:    bMesh,
@@ -390,18 +421,34 @@ class SilentShapeGame {
     // 4. Update enemies AI, shoot triggers, and HP bar overlays
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const enemy = this.enemies[i];
-      enemy.group.position.y = getGroundHeight(enemy.group.position.x, enemy.group.position.z);
+      
+      // If enemy is dissolved completely, remove from scene
+      if (enemy.isDissolved) {
+        enemy.destroy();
+        this.enemies.splice(i, 1);
+        if (enemy === this.targetEnemy) {
+          this.targetEnemy = null;
+          this.crosshairMesh.visible = false;
+          this.player.setTargetPosition(null);
+        }
+        continue;
+      }
 
-      enemy.update(playerPos, delta, (startPos, targetPos) => {
-        // Enemy bullet — glowing red cylinder to make it visible
-        const bGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.25, 6);
-        const bMat = new THREE.MeshBasicMaterial({ color: 0xff3333 }); // Glowing red
+      // Height offset to prevent sinking (spider is scaled 3x)
+      const offset = enemy.type === 'spider' ? 0.84 : 0.72;
+      enemy.group.position.y = getGroundHeight(enemy.group.position.x, enemy.group.position.z) + offset;
+
+      enemy.update(playerPos, delta, (startPos, targetPos, enemyType) => {
+        const isSpider = enemyType === 'spider';
+        const color = isSpider ? 0x00ffff : 0xff3333;
+
+        // Spider laser is thin/long, alien bullets are cylinders
+        const bGeo = isSpider 
+          ? new THREE.CylinderGeometry(0.015, 0.015, 0.45, 6) 
+          : new THREE.CylinderGeometry(0.04, 0.04, 0.25, 6);
+        const bMat = new THREE.MeshBasicMaterial({ color });
         const bulletMesh = new THREE.Mesh(bGeo, bMat);
-        
-        // Add a small point light to the bullet
-        const bLight = new THREE.PointLight(0xff3333, 1.0, 3.0);
-        bulletMesh.add(bLight);
-        
+
         bulletMesh.position.copy(startPos);
 
         const dir = new THREE.Vector3().subVectors(targetPos, startPos).normalize();
@@ -411,15 +458,15 @@ class SilentShapeGame {
         this.enemyProjectiles.push({
           mesh: bulletMesh,
           dir,
-          speed: 18.0,
+          speed: isSpider ? 26.0 : 20.0,
           age: 0,
           maxAge: 1.8
         });
-        
+
         soundManager.playGunshot('enemy');
       });
 
-      // Update 2D HP bar position (project world → screen)
+      // Update 2D HP bar position
       enemy.updateHPBarDOM(this.camera3, this.renderer, this.chunkManager.buildings);
     }
 
@@ -432,10 +479,43 @@ class SilentShapeGame {
       const distToPlayer = bullet.mesh.position.distanceTo(
         new THREE.Vector3().copy(playerPos).add(new THREE.Vector3(0, 0.6, 0))
       );
+
+      let hitDone = false;
+
+      // Check ground collision
+      const terrainH = getGroundHeight(bullet.mesh.position.x, bullet.mesh.position.z);
+      if (bullet.mesh.position.y <= terrainH) {
+        hitDone = true;
+      }
+
+      // Check building collision
+      if (!hitDone) {
+        for (const b of this.chunkManager.buildings) {
+          if (Math.abs(b.position.x - bullet.mesh.position.x) > 30 || Math.abs(b.position.z - bullet.mesh.position.z) > 30) continue;
+          if (b.userData.cachedBox && b.userData.cachedBox.containsPoint(bullet.mesh.position)) {
+            hitDone = true;
+            break;
+          }
+        }
+      }
+
+      // Check distance safety cleanup (300 units)
+      if (!hitDone && distToPlayer > 300.0) {
+        hitDone = true;
+      }
+
       if (distToPlayer < 1.0) {
         const playerDead = this.player.takeDamage(10);
         const hpBar = document.getElementById('hp-bar');
         if (hpBar) hpBar.style.width = this.player.hp + '%';
+
+        // Trigger damage vignette pulse
+        const vignette = document.getElementById('damage-vignette');
+        if (vignette) {
+          vignette.classList.remove('hit');
+          void vignette.offsetWidth;
+          vignette.classList.add('hit');
+        }
 
         this.scene.remove(bullet.mesh);
         bullet.mesh.geometry.dispose();
@@ -460,7 +540,7 @@ class SilentShapeGame {
         continue;
       }
 
-      if (bullet.age >= bullet.maxAge) {
+      if (hitDone) {
         this.scene.remove(bullet.mesh);
         bullet.mesh.geometry.dispose();
         bullet.mesh.material.dispose();
@@ -474,18 +554,43 @@ class SilentShapeGame {
       proj.mesh.position.addScaledVector(proj.dir, proj.speed * delta);
       proj.age += delta;
 
-      if (!proj.hitDone) {
+      let hitDone = false;
+
+      // Check ground collision
+      const terrainH = getGroundHeight(proj.mesh.position.x, proj.mesh.position.z);
+      if (proj.mesh.position.y <= terrainH) {
+        hitDone = true;
+      }
+
+      // Check building collision
+      if (!hitDone) {
+        for (const b of this.chunkManager.buildings) {
+          if (Math.abs(b.position.x - proj.mesh.position.x) > 30 || Math.abs(b.position.z - proj.mesh.position.z) > 30) continue;
+          if (b.userData.cachedBox && b.userData.cachedBox.containsPoint(proj.mesh.position)) {
+            hitDone = true;
+            break;
+          }
+        }
+      }
+
+      // Check distance safety cleanup (300 units)
+      const distToPlayer = proj.mesh.position.distanceTo(playerPos);
+      if (!hitDone && distToPlayer > 300.0) {
+        hitDone = true;
+      }
+
+      if (!proj.hitDone && !hitDone) {
         for (let j = this.enemies.length - 1; j >= 0; j--) {
           const enemy = this.enemies[j];
+          if (enemy.isDead) continue; // Skip dissolving/dead targets
           const dist = proj.mesh.position.distanceTo(
             enemy.group.position.clone().add(new THREE.Vector3(0, 0.6, 0))
           );
           if (dist < 1.0) {
             proj.hitDone = true;
+            hitDone = true;
             const isDead = enemy.takeDamage(10);
             if (isDead) {
-              enemy.destroy();
-              this.enemies.splice(j, 1);
               if (enemy === this.targetEnemy) {
                 this.targetEnemy = null;
                 this.crosshairMesh.visible = false;
@@ -497,11 +602,63 @@ class SilentShapeGame {
         }
       }
 
-      if (proj.age >= proj.maxAge || proj.hitDone) {
+      if (hitDone || proj.hitDone) {
         this.scene.remove(proj.mesh);
         proj.mesh.geometry.dispose();
         proj.mesh.material.dispose();
         this.playerProjectiles.splice(i, 1);
+      }
+    }
+
+    // 7. Update PUBG style enemy direction indicators
+    const indicatorsContainer = document.getElementById('enemy-indicators');
+    if (indicatorsContainer) {
+      if (!this._indicatorPool) {
+        this._indicatorPool = [];
+        // Pre-create 15 indicator DOM elements
+        for (let i = 0; i < 15; i++) {
+          const indicatorDiv = document.createElement('div');
+          indicatorDiv.className = 'enemy-indicator';
+          indicatorDiv.style.display = 'none';
+
+          const icon = document.createElement('div');
+          icon.className = 'indicator-icon';
+          icon.textContent = '▲';
+          indicatorDiv.appendChild(icon);
+
+          indicatorsContainer.appendChild(indicatorDiv);
+          this._indicatorPool.push(indicatorDiv);
+        }
+      }
+
+      let activeCount = 0;
+
+      this.enemies.forEach((enemy) => {
+        if (enemy.isDead) return;
+
+        const diff = new THREE.Vector3().subVectors(enemy.group.position, playerPos);
+        diff.y = 0;
+        const dist = diff.length();
+
+        // Distance range filter: hide indicator when very close (< 5m) or far (> 30m)
+        if (dist >= 5.0 && dist < 30.0 && activeCount < this._indicatorPool.length) {
+          // Precise relative angle using camera rotation space projection
+          const relativePos = diff.clone().applyQuaternion(this.camera3.quaternion.clone().invert());
+          const angleRad = Math.atan2(relativePos.x, -relativePos.z);
+          const deg = angleRad * (180 / Math.PI);
+          const opacity = Math.max(0.2, 1.0 - (dist / 30.0));
+
+          const indicatorDiv = this._indicatorPool[activeCount];
+          indicatorDiv.style.display = 'block';
+          indicatorDiv.style.transform = `rotate(${deg}deg)`;
+          indicatorDiv.style.opacity = opacity;
+          activeCount++;
+        }
+      });
+
+      // Hide unused pool elements
+      for (let i = activeCount; i < this._indicatorPool.length; i++) {
+        this._indicatorPool[i].style.display = 'none';
       }
     }
   }

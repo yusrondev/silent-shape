@@ -13,6 +13,21 @@
 import * as THREE from 'three';
 import { Physics } from './Physics.js';
 import { soundManager } from '../audio/SoundManager.js';
+import { getGroundHeight } from '../world/Terrain.js';
+
+// Shared materials and geometries for flight particles (smoke & spark)
+const sharedThrusterSmokeGeo = new THREE.BoxGeometry(0.12, 0.12, 0.12);
+const sharedThrusterSmokeMat = new THREE.MeshBasicMaterial({
+  color: 0x888888,
+  transparent: true,
+  opacity: 0.55
+});
+const sharedThrusterFireGeo = new THREE.BoxGeometry(0.08, 0.08, 0.08);
+const sharedThrusterFireMat = new THREE.MeshBasicMaterial({
+  color: 0xff4500,
+  transparent: true,
+  opacity: 0.85
+});
 
 const WALK_SPEED    = 6;
 const RUN_SPEED     = 11;
@@ -177,15 +192,15 @@ export class Player {
     lampMesh.position.set(0, 0.98, 0.22);
     this.group.add(lampMesh);
     
-    const visorLight = new THREE.SpotLight(0xffe066, 12.0, 45.0, Math.PI / 4, 0.6, 1.0);
-    visorLight.position.set(0, 0.98, 0.26);
+    this.visorLight = new THREE.SpotLight(0xffe066, 12.0, 45.0, Math.PI / 4, 0.6, 1.0);
+    this.visorLight.position.set(0, 0.98, 0.26);
     
     const visorTarget = new THREE.Object3D();
     visorTarget.position.set(0, 0.98, 5.0);
     this.group.add(visorTarget);
     
-    visorLight.target = visorTarget;
-    this.group.add(visorLight);
+    this.visorLight.target = visorTarget;
+    this.group.add(this.visorLight);
 
     // Helmet side comms bumps
     const commGeo = new THREE.BoxGeometry(0.06, 0.1, 0.06);
@@ -412,6 +427,34 @@ export class Player {
     this.frontCoatR    = _stub(); this.group.add(this.frontCoatR);
     this.frontCoatR2   = _stub(); this.frontCoatR.add(this.frontCoatR2);
 
+    // Boot Thruster Geometry
+    const thrustGeo = new THREE.CylinderGeometry(0.06, 0.0, 0.25, 6);
+    const thrustMat = new THREE.MeshBasicMaterial({
+      color: 0xff7700,
+      transparent: true,
+      opacity: 0.8,
+      blending: THREE.AdditiveBlending
+    });
+    
+    this.leftThruster = new THREE.Mesh(thrustGeo, thrustMat);
+    this.leftThruster.position.set(0, -0.48, 0.03); // under the boot
+    this.leftThruster.rotation.x = Math.PI; // pointing downward
+    this.leftThruster.visible = false;
+    this.leftKnee.add(this.leftThruster);
+
+    this.rightThruster = new THREE.Mesh(thrustGeo, thrustMat);
+    this.rightThruster.position.set(0, -0.48, 0.03);
+    this.rightThruster.rotation.x = Math.PI;
+    this.rightThruster.visible = false;
+    this.rightKnee.add(this.rightThruster);
+
+    // Static PointLight (avoid recompile, set intensity to 0 when inactive)
+    this.thrusterLight = new THREE.PointLight(0xffaa44, 0.0, 8.0);
+    this.thrusterLight.position.set(0, -0.4, 0);
+    this.group.add(this.thrusterLight);
+
+    this.thrusterParticles = [];
+
     this.group.traverse((child) => {
       if (child.isMesh) {
         child.castShadow = true;
@@ -448,8 +491,15 @@ export class Player {
     if (side === -1) this._leftTipMarker = tipMarker;
     else this._rightTipMarker = tipMarker;
 
-    // Initialize with 0 scale for deployment animation
-    wingGroup.scale.set(0, 0, 0);
+    // Sub-part references for sequential mechanical folding anim
+    wingGroup.userData = { main: mainMesh, tip: tipMesh };
+
+    // Sub-parts start folded/collapsed
+    mainMesh.scale.set(0, 1, 0);
+    tipMesh.scale.set(0, 0, 0);
+
+    // Group is always 1 scale
+    wingGroup.scale.set(1, 1, 1);
 
     return wingGroup;
   }
@@ -469,6 +519,7 @@ export class Player {
     this._updateParticles(delta);
     this._updateMuzzleParticles(delta);
     this._updateDustParticles(delta);
+    this._updateThrusterParticles(delta);
 
     // Sync group to position
     this.group.position.copy(this.position);
@@ -763,33 +814,88 @@ export class Player {
       }
     }
 
-    // Smooth deploy/retract animation for wings
-    const targetScale = this._gliderActive ? 1.0 : 0.0;
-    this._leftWing.scale.x = THREE.MathUtils.lerp(this._leftWing.scale.x, targetScale, 0.15);
-    this._leftWing.scale.y = THREE.MathUtils.lerp(this._leftWing.scale.y, targetScale, 0.15);
-    this._leftWing.scale.z = THREE.MathUtils.lerp(this._leftWing.scale.z, targetScale, 0.15);
-    this._leftWing.visible = this._leftWing.scale.x > 0.01;
+    // ── GLIDER WINGS & THRUSTERS (Iron Man Sequence) ──
+    const mainL = this._leftWing.userData.main;
+    const mainR = this._rightWing.userData.main;
+    const tipL = this._leftWing.userData.tip;
+    const tipR = this._rightWing.userData.tip;
 
-    this._rightWing.scale.copy(this._leftWing.scale);
-    this._rightWing.visible = this._leftWing.visible;
+    if (this._gliderActive) {
+      this._leftWing.visible = true;
+      this._rightWing.visible = true;
 
-    // Spawn wind trails at wingtips if flying
-    if (this._gliderActive && this._leftWing.scale.x > 0.5) {
+      // Phase 1: Deploy main wing panels (length-wise and width-wise)
+      mainL.scale.x = THREE.MathUtils.lerp(mainL.scale.x, 1.0, 0.18);
+      mainL.scale.z = THREE.MathUtils.lerp(mainL.scale.z, 1.0, 0.18);
+      mainR.scale.copy(mainL.scale);
+
+      // Phase 2: Snap tip winglets open once main wing is mostly out
+      if (mainL.scale.x > 0.75) {
+        tipL.scale.x = THREE.MathUtils.lerp(tipL.scale.x, 1.0, 0.28);
+        tipL.scale.y = THREE.MathUtils.lerp(tipL.scale.y, 1.0, 0.28);
+        tipL.scale.z = THREE.MathUtils.lerp(tipL.scale.z, 1.0, 0.28);
+        tipR.scale.copy(tipL.scale);
+      }
+
+      // Activate boots thrusters
+      this.leftThruster.visible = true;
+      this.rightThruster.visible = true;
+      
+      const flicker = 0.85 + Math.random() * 0.45;
+      this.leftThruster.scale.set(flicker, flicker * 1.6, flicker);
+      this.rightThruster.scale.set(flicker, flicker * 1.6, flicker);
+
+      // Thruster PointLight glow
+      this.thrusterLight.intensity = 2.8 + Math.random() * 1.2;
+
+      // Spawn thruster smoke/fire particles under feet
       const leftPos = new THREE.Vector3();
       const rightPos = new THREE.Vector3();
-      this._leftTipMarker.getWorldPosition(leftPos);
-      this._rightTipMarker.getWorldPosition(rightPos);
+      this.leftThruster.getWorldPosition(leftPos);
+      this.rightThruster.getWorldPosition(rightPos);
 
-      this._spawnTrailParticle(leftPos);
-      this._spawnTrailParticle(rightPos);
-    }
+      // Spawn particle trails
+      this._spawnThrusterParticle(leftPos);
+      this._spawnThrusterParticle(rightPos);
 
-    // Glider wing flap / angle
-    if (this._gliderActive) {
+      // Spawn wind trails at wingtips if fully deployed
+      if (tipL.scale.x > 0.75) {
+        const tipLPos = new THREE.Vector3();
+        const tipRPos = new THREE.Vector3();
+        this._leftTipMarker.getWorldPosition(tipLPos);
+        this._rightTipMarker.getWorldPosition(tipRPos);
+        this._spawnTrailParticle(tipLPos);
+        this._spawnTrailParticle(tipRPos);
+      }
+
+      // Flap wings
       const flapT = Date.now() * 0.005;
       this._leftWing.rotation.z  = -0.1 + Math.sin(flapT) * 0.03;
       this._rightWing.rotation.z =  0.1 - Math.sin(flapT) * 0.03;
+
     } else {
+      // Retract Sequence: Tips collapse first, then main wings
+      tipL.scale.x = THREE.MathUtils.lerp(tipL.scale.x, 0.0, 0.24);
+      tipL.scale.y = THREE.MathUtils.lerp(tipL.scale.y, 0.0, 0.24);
+      tipL.scale.z = THREE.MathUtils.lerp(tipL.scale.z, 0.0, 0.24);
+      tipR.scale.copy(tipL.scale);
+
+      if (tipL.scale.x < 0.25) {
+        mainL.scale.x = THREE.MathUtils.lerp(mainL.scale.x, 0.0, 0.2);
+        mainL.scale.z = THREE.MathUtils.lerp(mainL.scale.z, 0.0, 0.2);
+        mainR.scale.copy(mainL.scale);
+      }
+
+      if (mainL.scale.x < 0.05) {
+        this._leftWing.visible = false;
+        this._rightWing.visible = false;
+      }
+
+      // Turn off boots thrusters
+      this.leftThruster.visible = false;
+      this.rightThruster.visible = false;
+      this.thrusterLight.intensity = 0.0;
+
       this._leftWing.rotation.z  = THREE.MathUtils.lerp(this._leftWing.rotation.z, -0.1, 0.15);
       this._rightWing.rotation.z = THREE.MathUtils.lerp(this._rightWing.rotation.z, 0.1, 0.15);
     }
@@ -1159,5 +1265,59 @@ export class Player {
   setTargetPosition(pos) {
     this._targetEnemyPos = pos;
     this._hasTarget = !!pos;
+  }
+
+  _spawnThrusterParticle(pos) {
+    if (!this.thrusterParticles) this.thrusterParticles = [];
+
+    // Spawn fire sparks or smoke
+    const isFire = Math.random() > 0.45;
+    
+    // Instantiate separate material copies to safely fade opacity without sharing
+    const pMat = isFire ? sharedThrusterFireMat.clone() : sharedThrusterSmokeMat.clone();
+    const pMesh = new THREE.Mesh(
+      isFire ? sharedThrusterFireGeo : sharedThrusterSmokeGeo,
+      pMat
+    );
+
+    pMesh.position.copy(pos);
+    pMesh.position.x += (Math.random() - 0.5) * 0.15;
+    pMesh.position.z += (Math.random() - 0.5) * 0.15;
+
+    this.scene.add(pMesh);
+
+    this.thrusterParticles.push({
+      mesh: pMesh,
+      vx: (Math.random() - 0.5) * 0.4,
+      vy: -1.8 - Math.random() * 2.2, // thrust downward
+      vz: (Math.random() - 0.5) * 0.4,
+      life: 0.35 + Math.random() * 0.25,
+      isFire
+    });
+  }
+
+  _updateThrusterParticles(delta) {
+    if (!this.thrusterParticles) return;
+    for (let i = this.thrusterParticles.length - 1; i >= 0; i--) {
+      const p = this.thrusterParticles[i];
+      p.mesh.position.x += p.vx * delta;
+      p.mesh.position.y += p.vy * delta;
+      p.mesh.position.z += p.vz * delta;
+
+      if (p.isFire) {
+        p.mesh.scale.multiplyScalar(Math.max(0.1, 1.0 - 2.0 * delta));
+        p.mesh.material.opacity = Math.max(0, p.mesh.material.opacity - delta * 2.8);
+      } else {
+        p.mesh.scale.multiplyScalar(1.0 + 1.6 * delta);
+        p.mesh.material.opacity = Math.max(0, p.mesh.material.opacity - delta * 1.5);
+      }
+
+      p.life -= delta;
+      if (p.life <= 0) {
+        this.scene.remove(p.mesh);
+        p.mesh.material.dispose(); // dispose clone material
+        this.thrusterParticles.splice(i, 1);
+      }
+    }
   }
 }

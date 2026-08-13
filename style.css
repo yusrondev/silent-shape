@@ -952,3 +952,57 @@ body::after {
 .settings-close-btn:hover {
   opacity: 0.9;
 }
+
+/* ── Damage Vignette Effect ── */
+.damage-vignette {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 999;
+  box-shadow: inset 0 0 100px rgba(255, 0, 0, 0);
+  transition: box-shadow 0.1s ease-out;
+}
+.damage-vignette.hit {
+  animation: hit-pulse 0.4s ease-out;
+}
+@keyframes hit-pulse {
+  0% { box-shadow: inset 0 0 120px rgba(255, 0, 0, 0.95); }
+  50% { box-shadow: inset 0 0 80px rgba(255, 0, 0, 0.6); }
+  100% { box-shadow: inset 0 0 100px rgba(255, 0, 0, 0); }
+}
+
+/* ── Enemy Indicators (PUBG style) ── */
+.enemy-indicators {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 260px;
+  height: 260px;
+  pointer-events: none;
+  z-index: 10;
+}
+.enemy-indicator {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  transition: opacity 0.15s ease-out;
+}
+.enemy-indicator .indicator-icon {
+  position: absolute;
+  top: 10px;
+  font-size: 11px;
+  color: #ff3c3c;
+  text-shadow: 0 0 5px rgba(255, 60, 60, 0.95);
+  animation: pulse-indicator 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-indicator {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.15); opacity: 1; }
+}

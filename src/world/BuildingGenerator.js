@@ -124,6 +124,9 @@ export class BuildingGenerator {
     // ── Debris — ALL MERGED into 1 draw call ──────────────────────────────
     this._addMergedDebris(group, rng, chunkX, chunkZ, chunkSize);
 
+    // ── Power Poles & Cables ──────────────────────────────────────────────
+    this._addPowerPoles(group, rng, chunkX, chunkZ, chunkSize);
+
     // ── Artefact (optional, 35% chance) ──────────────────────────────────
     const artefact = this._maybeAddArtefact(group, rng, chunkX, chunkZ, chunkSize, seed);
 
@@ -305,6 +308,110 @@ export class BuildingGenerator {
       vineGroup.rotation.set(tiltX, rng() * Math.PI * 2, tiltZ);
       vineGroup.add(vineMesh);
       group.add(vineGroup);
+    }
+  }
+
+  _addPowerPoles(group, rng, chunkX, chunkZ, chunkSize) {
+    const count = Math.floor(rng() * 3) + 2; // 2 to 4 poles per chunk
+    const offsetX = chunkX * chunkSize;
+    const offsetZ = chunkZ * chunkSize;
+
+    // Roadside start and end points across the chunk
+    const startX = offsetX + rng() * 10;
+    const startZ = offsetZ + rng() * chunkSize;
+    const endX = offsetX + chunkSize - rng() * 10;
+    const endZ = offsetZ + rng() * chunkSize;
+
+    const poleMat = getMaterial(0x4a3b32); // wooden pole dark brown
+    const crossMat = getMaterial(0x5c4d42); // crossbar
+    const insMat = getMaterial(0xdddddd); // insulators
+
+    const poleCoords = [];
+
+    for (let i = 0; i < count; i++) {
+      const t = i / (count - 1);
+      const px = startX + (endX - startX) * t + (rng() - 0.5) * 4;
+      const pz = startZ + (endZ - startZ) * t + (rng() - 0.5) * 4;
+      const terrainH = getGroundHeight(px, pz);
+
+      const height = 7 + rng() * 4;
+      const sink = rng() > 0.6 ? rng() * 2.0 : 0; // some are sunken/buried deeper
+      const tiltX = (rng() - 0.5) * 0.18; // tilt range
+      const tiltZ = (rng() - 0.5) * 0.18;
+
+      const poleGroup = new THREE.Group();
+      poleGroup.position.set(px, terrainH + height / 2 - sink, pz);
+      poleGroup.rotation.set(tiltX, rng() * 0.2, tiltZ);
+      group.add(poleGroup);
+
+      // Main vertical pole mesh
+      const verticalGeo = getGeometry(0.18, height, 0.18);
+      const verticalMesh = new THREE.Mesh(verticalGeo, poleMat);
+      verticalMesh.castShadow = true;
+      verticalMesh.receiveShadow = true;
+      poleGroup.add(verticalMesh);
+
+      // Horizontal crossbar mesh near the top
+      const crossbarGeo = getGeometry(1.6, 0.12, 0.12);
+      const crossbarMesh = new THREE.Mesh(crossbarGeo, crossMat);
+      crossbarMesh.position.y = height / 2 - 0.4;
+      crossbarMesh.castShadow = true;
+      crossbarMesh.receiveShadow = true;
+      poleGroup.add(crossbarMesh);
+
+      // Three insulators
+      const insGeo = getGeometry(0.08, 0.16, 0.08);
+      const offsets = [-0.7, 0, 0.7];
+      const insulatorMeshes = [];
+
+      offsets.forEach(ox => {
+        const ins = new THREE.Mesh(insGeo, insMat);
+        ins.position.set(ox, height / 2 - 0.26, 0);
+        ins.castShadow = true;
+        poleGroup.add(ins);
+        insulatorMeshes.push(ins);
+      });
+
+      poleGroup.updateMatrixWorld(true);
+
+      // Compute wire attachment world positions
+      const wirePoints = offsets.map(ox => {
+        const localPt = new THREE.Vector3(ox, height / 2 - 0.18, 0);
+        return localPt.applyMatrix4(poleGroup.matrixWorld);
+      });
+
+      poleCoords.push(wirePoints);
+    }
+
+    // Connect poles with hanging cables
+    const steps = 12;
+    for (let i = 1; i < count; i++) {
+      const prevPts = poleCoords[i - 1];
+      const currPts = poleCoords[i];
+
+      for (let w = 0; w < 3; w++) {
+        const pA = prevPts[w];
+        const pB = currPts[w];
+
+        const dist = pA.distanceTo(pB);
+        const sag = dist * 0.08 + 0.15; // physical hanging sag
+        const pMid = new THREE.Vector3().addVectors(pA, pB).multiplyScalar(0.5);
+        pMid.y -= sag;
+
+        const points = [];
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          const x = (1 - t) * (1 - t) * pA.x + 2 * (1 - t) * t * pMid.x + t * t * pB.x;
+          const y = (1 - t) * (1 - t) * pA.y + 2 * (1 - t) * t * pMid.y + t * t * pB.y;
+          const z = (1 - t) * (1 - t) * pA.z + 2 * (1 - t) * t * pMid.z + t * t * pB.z;
+          points.push(new THREE.Vector3(x, y, z));
+        }
+
+        const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
+        const lineMat = new THREE.LineBasicMaterial({ color: 0x18181a });
+        const line = new THREE.Line(lineGeo, lineMat);
+        group.add(line);
+      }
     }
   }
 
